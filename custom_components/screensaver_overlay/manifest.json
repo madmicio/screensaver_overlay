@@ -3,7 +3,7 @@
   "name": "Screensaver Overlay",
   "codeowners": ["@madmicio"],
   "config_flow": true,
-  "dependencies": ["frontend"],
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/madmicio/screensaver_overlay",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/madmicio/screensaver_overlay/issues",

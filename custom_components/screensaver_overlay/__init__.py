@@ -8,6 +8,7 @@ from pathlib import Path
 from homeassistant.components import frontend
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
 try:
@@ -26,6 +27,7 @@ from .const import (
 from .websocket_api import async_register_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 FRONTEND_REGISTERED = "_frontend_registered"
 WEBSOCKET_REGISTERED = "_websocket_registered"
 
