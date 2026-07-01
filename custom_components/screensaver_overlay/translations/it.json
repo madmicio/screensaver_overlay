@@ -1,0 +1,69 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Screensaver Overlay",
+        "description": "Configura lo screensaver globale come overlay.",
+        "data": {
+          "weather_entity": "Entita meteo",
+          "weather_icon_size": "Grandezza icona meteo",
+          "weather_description_entity": "Sensore descrizione meteo",
+          "weather_description_text_size": "Dimensione testo descrizione meteo",
+          "internal_temperature": "Sensore temperatura interna",
+          "external_temperature": "Sensore temperatura esterna",
+          "rain_sensor": "Sensore pioggia",
+          "calendars": "Calendari",
+          "value_entities": "Entita valore",
+          "status_icon_entities": "Entita icone stato",
+          "info_text_size": "Dimensione testo eventi e valori",
+          "info_items_limit": "Numero massimo eventi e valori",
+          "show_status_icons": "Mostra icone di stato",
+          "show_weather_icon": "Mostra icona grande meteo",
+          "show_clock": "Mostra ora e data",
+          "show_info": "Mostra calendario ed entita valore",
+          "show_temperatures": "Mostra temperature interna ed esterna",
+          "show_hourly_forecast": "Mostra meteo orario inferiore",
+          "limit_to_dashboards": "Limita lo screensaver alle dashboard",
+          "allowed_dashboard_paths": "Dashboard abilitate",
+          "motion_sensor": "Sensore movimento",
+          "screen_switch": "Switch schermo",
+          "overlay_idle_timeout": "Timeout overlay",
+          "screen_off_timeout": "Timeout spegnimento schermo"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Screensaver Overlay",
+        "data": {
+          "weather_entity": "Entita meteo",
+          "weather_icon_size": "Grandezza icona meteo",
+          "weather_description_entity": "Sensore descrizione meteo",
+          "weather_description_text_size": "Dimensione testo descrizione meteo",
+          "internal_temperature": "Sensore temperatura interna",
+          "external_temperature": "Sensore temperatura esterna",
+          "rain_sensor": "Sensore pioggia",
+          "calendars": "Calendari",
+          "value_entities": "Entita valore",
+          "status_icon_entities": "Entita icone stato",
+          "info_text_size": "Dimensione testo eventi e valori",
+          "info_items_limit": "Numero massimo eventi e valori",
+          "show_status_icons": "Mostra icone di stato",
+          "show_weather_icon": "Mostra icona grande meteo",
+          "show_clock": "Mostra ora e data",
+          "show_info": "Mostra calendario ed entita valore",
+          "show_temperatures": "Mostra temperature interna ed esterna",
+          "show_hourly_forecast": "Mostra meteo orario inferiore",
+          "limit_to_dashboards": "Limita lo screensaver alle dashboard",
+          "allowed_dashboard_paths": "Dashboard abilitate",
+          "motion_sensor": "Sensore movimento",
+          "screen_switch": "Switch schermo",
+          "overlay_idle_timeout": "Timeout overlay",
+          "screen_off_timeout": "Timeout spegnimento schermo"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Screensaver Overlay",
+        "description": "Configure the global screensaver overlay.",
+        "data": {
+          "weather_entity": "Weather entity",
+          "weather_icon_size": "Weather icon size",
+          "weather_description_entity": "Weather description sensor",
+          "weather_description_text_size": "Weather description text size",
+          "internal_temperature": "Internal temperature sensor",
+          "external_temperature": "External temperature sensor",
+          "rain_sensor": "Rain sensor",
+          "calendars": "Calendars",
+          "value_entities": "Value entities",
+          "status_icon_entities": "Status icon entities",
+          "info_text_size": "Events and values text size",
+          "info_items_limit": "Maximum events and values",
+          "show_status_icons": "Show status icons",
+          "show_weather_icon": "Show large weather icon",
+          "show_clock": "Show time and date",
+          "show_info": "Show calendar and value entities",
+          "show_temperatures": "Show internal and external temperatures",
+          "show_hourly_forecast": "Show lower hourly forecast",
+          "limit_to_dashboards": "Limit screensaver to dashboards",
+          "allowed_dashboard_paths": "Allowed dashboards",
+          "motion_sensor": "Motion sensor",
+          "screen_switch": "Screen switch",
+          "overlay_idle_timeout": "Overlay idle timeout",
+          "screen_off_timeout": "Screen off timeout"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Screensaver Overlay options",
+        "data": {
+          "weather_entity": "Weather entity",
+          "weather_icon_size": "Weather icon size",
+          "weather_description_entity": "Weather description sensor",
+          "weather_description_text_size": "Weather description text size",
+          "internal_temperature": "Internal temperature sensor",
+          "external_temperature": "External temperature sensor",
+          "rain_sensor": "Rain sensor",
+          "calendars": "Calendars",
+          "value_entities": "Value entities",
+          "status_icon_entities": "Status icon entities",
+          "info_text_size": "Events and values text size",
+          "info_items_limit": "Maximum events and values",
+          "show_status_icons": "Show status icons",
+          "show_weather_icon": "Show large weather icon",
+          "show_clock": "Show time and date",
+          "show_info": "Show calendar and value entities",
+          "show_temperatures": "Show internal and external temperatures",
+          "show_hourly_forecast": "Show lower hourly forecast",
+          "limit_to_dashboards": "Limit screensaver to dashboards",
+          "allowed_dashboard_paths": "Allowed dashboards",
+          "motion_sensor": "Motion sensor",
+          "screen_switch": "Screen switch",
+          "overlay_idle_timeout": "Overlay idle timeout",
+          "screen_off_timeout": "Screen off timeout"
+        }
+      }
+    }
+  }
+}
