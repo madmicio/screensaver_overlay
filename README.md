@@ -41,6 +41,9 @@ Restart Home Assistant, then add the integration from **Settings > Devices & ser
 - Exposes websocket commands for the frontend overlay.
 - Can control a screen switch while the overlay is visible.
 - Supports weather, temperature, calendar, value, status icon and motion entities.
+- Supports `cg_alert` calendar events as a discreet red-dot alert.
+- Supports custom Material Design Icon overrides for status icons from the sidebar panel.
+- Documents which features are enabled by each configured entity in the component README.
 
 ## HACS Publishing Checklist
 

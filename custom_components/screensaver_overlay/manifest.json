@@ -3,9 +3,9 @@
   "name": "Screensaver Overlay",
   "codeowners": ["@madmicio"],
   "config_flow": true,
-  "dependencies": ["frontend", "http"],
-  "documentation": "https://github.com/madmicio/screensaver_overlay",
+  "dependencies": ["frontend", "panel_custom"],
+  "documentation": "https://github.com/madmicio/screensaver-card",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/madmicio/screensaver_overlay/issues",
+  "issue_tracker": "https://github.com/madmicio/screensaver-card/issues",
   "version": "0.1.0"
 }

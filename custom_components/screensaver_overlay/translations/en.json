@@ -25,10 +25,9 @@
           "show_hourly_forecast": "Show lower hourly forecast",
           "limit_to_dashboards": "Limit screensaver to dashboards",
           "allowed_dashboard_paths": "Allowed dashboards",
-          "motion_sensor": "Motion sensor",
-          "screen_switch": "Screen switch",
-          "overlay_idle_timeout": "Overlay idle timeout",
-          "screen_off_timeout": "Screen off timeout"
+          "background_images": "Background images",
+          "background_carousel_interval": "Image carousel interval (seconds)",
+          "overlay_idle_timeout": "Overlay idle timeout (seconds)"
         }
       }
     }
@@ -58,10 +57,9 @@
           "show_hourly_forecast": "Show lower hourly forecast",
           "limit_to_dashboards": "Limit screensaver to dashboards",
           "allowed_dashboard_paths": "Allowed dashboards",
-          "motion_sensor": "Motion sensor",
-          "screen_switch": "Screen switch",
-          "overlay_idle_timeout": "Overlay idle timeout",
-          "screen_off_timeout": "Screen off timeout"
+          "background_images": "Background images",
+          "background_carousel_interval": "Image carousel interval (seconds)",
+          "overlay_idle_timeout": "Overlay idle timeout (seconds)"
         }
       }
     }

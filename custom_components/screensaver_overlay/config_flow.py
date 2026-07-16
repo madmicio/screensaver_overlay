@@ -11,18 +11,17 @@ from homeassistant.components import frontend
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_BACKGROUND_CAROUSEL_INTERVAL,
+    CONF_BACKGROUND_IMAGES,
     CONF_CALENDARS,
     CONF_ALLOWED_DASHBOARD_PATHS,
     CONF_EXTERNAL_TEMPERATURE,
     CONF_INFO_ITEMS_LIMIT,
     CONF_INFO_TEXT_SIZE,
     CONF_INTERNAL_TEMPERATURE,
-    CONF_MOTION_SENSOR,
     CONF_LIMIT_TO_DASHBOARDS,
     CONF_OVERLAY_IDLE_TIMEOUT,
     CONF_RAIN_SENSOR,
-    CONF_SCREEN_OFF_TIMEOUT,
-    CONF_SCREEN_SWITCH,
     CONF_SHOW_CLOCK,
     CONF_SHOW_HOURLY_FORECAST,
     CONF_SHOW_INFO,
@@ -39,7 +38,7 @@ from .const import (
     DEFAULT_INFO_TEXT_SIZE,
     DEFAULT_LIMIT_TO_DASHBOARDS,
     DEFAULT_OVERLAY_IDLE_TIMEOUT,
-    DEFAULT_SCREEN_OFF_TIMEOUT,
+    DEFAULT_BACKGROUND_CAROUSEL_INTERVAL,
     DEFAULT_SHOW_BLOCK,
     DEFAULT_WEATHER_DESCRIPTION_TEXT_SIZE,
     DEFAULT_WEATHER_ICON_SIZE,
@@ -67,6 +66,45 @@ def _normalize_path_list(value: Any) -> list[str]:
             if (path := _normalize_path(item))
         ]
     return []
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    """Normalize a string/list config value."""
+    if isinstance(value, list):
+        normalized = []
+        for item in value:
+            if isinstance(item, dict):
+                item = item.get("entity") or item.get("value")
+            item = str(item or "").strip()
+            if item:
+                normalized.append(item)
+        return normalized
+    if isinstance(value, str):
+        return [
+            item.strip()
+            for item in value.replace(",", "\n").splitlines()
+            if item.strip()
+        ]
+    return []
+
+
+def _merge_status_icon_overrides(value: Any, existing: Any) -> list[Any]:
+    """Preserve icon overrides when the standard options flow saves entity ids."""
+    existing_icons = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            entity = str(item.get("entity") or item.get("value") or "").strip()
+            icon = str(item.get("icon") or "").strip()
+            if entity and icon:
+                existing_icons[entity] = icon
+
+    merged = []
+    for entity in _normalize_string_list(value):
+        icon = existing_icons.get(entity)
+        merged.append({"entity": entity, "icon": icon} if icon else entity)
+    return merged
 
 
 def _dashboard_options(hass) -> list[dict[str, str]]:
@@ -160,7 +198,9 @@ def _schema(hass, defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
             vol.Optional(
                 CONF_STATUS_ICON_ENTITIES,
-                default=defaults.get(CONF_STATUS_ICON_ENTITIES, []),
+                default=_normalize_string_list(
+                    defaults.get(CONF_STATUS_ICON_ENTITIES, [])
+                ),
             ): selector.EntitySelector(selector.EntitySelectorConfig(multiple=True)),
             vol.Optional(
                 CONF_INFO_TEXT_SIZE,
@@ -228,16 +268,19 @@ def _schema(hass, defaults: dict[str, Any] | None = None) -> vol.Schema:
                     custom_value=True,
                 )
             ),
-            optional_entity(CONF_MOTION_SENSOR): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="binary_sensor")
-            ),
-            optional_entity(CONF_SCREEN_SWITCH): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="switch")
+            vol.Optional(
+                CONF_BACKGROUND_IMAGES,
+                default="\n".join(
+                    _normalize_string_list(defaults.get(CONF_BACKGROUND_IMAGES, []))
+                ),
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
             ),
             vol.Optional(
-                CONF_OVERLAY_IDLE_TIMEOUT,
+                CONF_BACKGROUND_CAROUSEL_INTERVAL,
                 default=defaults.get(
-                    CONF_OVERLAY_IDLE_TIMEOUT, DEFAULT_OVERLAY_IDLE_TIMEOUT
+                    CONF_BACKGROUND_CAROUSEL_INTERVAL,
+                    DEFAULT_BACKGROUND_CAROUSEL_INTERVAL,
                 ),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
@@ -249,14 +292,14 @@ def _schema(hass, defaults: dict[str, Any] | None = None) -> vol.Schema:
                 )
             ),
             vol.Optional(
-                CONF_SCREEN_OFF_TIMEOUT,
+                CONF_OVERLAY_IDLE_TIMEOUT,
                 default=defaults.get(
-                    CONF_SCREEN_OFF_TIMEOUT, DEFAULT_SCREEN_OFF_TIMEOUT
+                    CONF_OVERLAY_IDLE_TIMEOUT, DEFAULT_OVERLAY_IDLE_TIMEOUT
                 ),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
-                    min=0,
-                    max=86400,
+                    min=1,
+                    max=3600,
                     step=1,
                     mode=selector.NumberSelectorMode.BOX,
                     unit_of_measurement="s",
@@ -296,6 +339,14 @@ class ScreensaverOverlayOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Manage options."""
         if user_input is not None:
+            config_entry = self._config_entry or getattr(self, "config_entry", None)
+            existing = {}
+            if config_entry is not None:
+                existing = {**config_entry.data, **config_entry.options}
+            user_input[CONF_STATUS_ICON_ENTITIES] = _merge_status_icon_overrides(
+                user_input.get(CONF_STATUS_ICON_ENTITIES, []),
+                existing.get(CONF_STATUS_ICON_ENTITIES, []),
+            )
             return self.async_create_entry(title="", data=user_input)
 
         config_entry = self._config_entry or getattr(self, "config_entry", None)

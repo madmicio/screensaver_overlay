@@ -25,10 +25,9 @@
           "show_hourly_forecast": "Mostra meteo orario inferiore",
           "limit_to_dashboards": "Limita lo screensaver alle dashboard",
           "allowed_dashboard_paths": "Dashboard abilitate",
-          "motion_sensor": "Sensore movimento",
-          "screen_switch": "Switch schermo",
-          "overlay_idle_timeout": "Timeout overlay",
-          "screen_off_timeout": "Timeout spegnimento schermo"
+          "background_images": "Immagini sfondo",
+          "background_carousel_interval": "Intervallo carosello immagini (secondi)",
+          "overlay_idle_timeout": "Timeout overlay (secondi)"
         }
       }
     }
@@ -58,10 +57,9 @@
           "show_hourly_forecast": "Mostra meteo orario inferiore",
           "limit_to_dashboards": "Limita lo screensaver alle dashboard",
           "allowed_dashboard_paths": "Dashboard abilitate",
-          "motion_sensor": "Sensore movimento",
-          "screen_switch": "Switch schermo",
-          "overlay_idle_timeout": "Timeout overlay",
-          "screen_off_timeout": "Timeout spegnimento schermo"
+          "background_images": "Immagini sfondo",
+          "background_carousel_interval": "Intervallo carosello immagini (secondi)",
+          "overlay_idle_timeout": "Timeout overlay (secondi)"
         }
       }
     }

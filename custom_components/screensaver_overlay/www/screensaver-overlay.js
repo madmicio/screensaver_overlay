@@ -4,6 +4,13 @@ const DEFAULT_INFO_TEXT_SIZE = 2;
 const DEFAULT_INFO_ITEMS_LIMIT = 5;
 const DEFAULT_WEATHER_ICON_SIZE = 27;
 const DEFAULT_WEATHER_DESCRIPTION_TEXT_SIZE = 1.8;
+const DEFAULT_BACKGROUND_CAROUSEL_INTERVAL = 60;
+const BURN_IN_PADDING_TOTAL = 60;
+const BURN_IN_PADDING_MAX = 30;
+const BURN_IN_PADDING_STEP = 5;
+const BURN_IN_INTERVAL = 30000;
+const CLIENT_ID_STORAGE_KEY = "screensaver-overlay-client-id";
+const OVERLAY_ACTIVE_STORAGE_PREFIX = "screensaver-overlay-active";
 const ASSET_BASE = "/screensaver_overlay";
 
 if (!window.__screensaverOverlayComponentInstalled) {
@@ -15,17 +22,89 @@ if (!window.__screensaverOverlayComponentInstalled) {
   let clockTimer = undefined;
   let eventTimer = undefined;
   let infoTimer = undefined;
+  let backgroundTimer = undefined;
+  let burnInTimer = undefined;
   let pageAllowedCheckTimer = undefined;
   let stateRenderTimer = undefined;
   let stateChangedUnsub = undefined;
   let forecastUnsub = undefined;
+  let wakeEventUnsub = undefined;
   let config = null;
   let events = [];
   let hourlyForecast = [];
+  let clientId = null;
   let isVisible = false;
+  let cgAlertActive = false;
+  let backendOverlayActive = false;
+  let overlayStateVersion = 0;
   let showSensorValues = false;
+  let backgroundIndex = 0;
+  let inputShieldTimer = undefined;
+
+  const INPUT_SHIELD_MS = 350;
+  const INPUT_SHIELD_EVENTS = [
+    "pointerdown",
+    "pointerup",
+    "pointercancel",
+    "mousedown",
+    "mouseup",
+    "touchstart",
+    "touchend",
+    "touchcancel",
+    "click",
+  ];
 
   const getHass = () => document.querySelector("home-assistant")?.hass;
+
+  const getClientId = () => {
+    try {
+      const stored = window.localStorage.getItem(CLIENT_ID_STORAGE_KEY);
+      if (stored) {
+        return stored;
+      }
+      const generated =
+        window.crypto?.randomUUID?.() ||
+        `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      window.localStorage.setItem(CLIENT_ID_STORAGE_KEY, generated);
+      return generated;
+    } catch {
+      return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  };
+
+  const getDefaultClientName = () => {
+    const ua = navigator.userAgent || "Browser";
+    if (/Fully/i.test(ua)) return "Fully Kiosk";
+    if (/Home Assistant/i.test(ua)) return "Home Assistant Companion";
+    if (/Chrome/i.test(ua)) return "Chrome";
+    if (/Safari/i.test(ua)) return "Safari";
+    if (/Firefox/i.test(ua)) return "Firefox";
+    if (/Edge/i.test(ua)) return "Edge";
+    return "Browser";
+  };
+
+  const overlayActiveStorageKey = () =>
+    `${OVERLAY_ACTIVE_STORAGE_PREFIX}-${clientId || getClientId()}`;
+
+  const setStoredOverlayActive = (active) => {
+    try {
+      if (active) {
+        window.localStorage.setItem(overlayActiveStorageKey(), "1");
+      } else {
+        window.localStorage.removeItem(overlayActiveStorageKey());
+      }
+    } catch {
+      // Ignore unavailable storage.
+    }
+  };
+
+  const getStoredOverlayActive = () => {
+    try {
+      return window.localStorage.getItem(overlayActiveStorageKey()) === "1";
+    } catch {
+      return false;
+    }
+  };
 
   const waitForHass = () =>
     new Promise((resolve) => {
@@ -55,6 +134,22 @@ if (!window.__screensaverOverlayComponentInstalled) {
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
 
+  const normalizeEntityList = (value) => {
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => (typeof item === "string" ? item : item?.entity || item?.value))
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+    }
+    if (typeof value === "string") {
+      return value
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+
   const getConfig = async () => {
     const hass = getHass();
     if (!hass) {
@@ -64,8 +159,23 @@ if (!window.__screensaverOverlayComponentInstalled) {
     try {
       const result = await hass.connection.sendMessagePromise({
         type: "screensaver_overlay/get_config",
+        client_id: clientId,
       });
       config = result.config;
+      const globalConfig = result.entries?.[0] || {};
+      const calendars = normalizeEntityList(config?.calendars);
+      const globalCalendars = normalizeEntityList(globalConfig.calendars);
+      const valueEntities = normalizeEntityList(
+        config?.value_entities || config?.value_entity
+      );
+      const globalValueEntities = normalizeEntityList(
+        globalConfig.value_entities || globalConfig.value_entity
+      );
+      if (config) {
+        config.calendars = calendars.length ? calendars : globalCalendars;
+        config.value_entities = valueEntities.length ? valueEntities : globalValueEntities;
+      }
+      backendOverlayActive = !!result.overlay_active;
       return config;
     } catch (err) {
       console.warn("screensaver-overlay failed to load config", err);
@@ -83,6 +193,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       await hass.connection.sendMessagePromise({
         type,
         entry_id: config.entry_id,
+        client_id: clientId,
       });
     } catch (err) {
       console.warn(`screensaver-overlay failed to send ${type}`, err);
@@ -102,7 +213,30 @@ if (!window.__screensaverOverlayComponentInstalled) {
 
   const getWeatherEntity = () => config?.weather_entity || config?.entity;
 
-  const getValueEntities = () => config?.value_entities || config?.value_entity || [];
+  const registerClient = async () => {
+    const hass = getHass();
+    if (!hass || !clientId) {
+      return;
+    }
+
+    try {
+      await hass.connection.sendMessagePromise({
+        type: "screensaver_overlay/register_client",
+        client_id: clientId,
+        name: getDefaultClientName(),
+        path: window.location.pathname,
+        user_agent: navigator.userAgent || "",
+        platform: navigator.platform || "",
+      });
+    } catch (err) {
+      console.warn("screensaver-overlay failed to register browser client", err);
+    }
+  };
+
+  const getCalendars = () => normalizeEntityList(config?.calendars);
+
+  const getValueEntities = () =>
+    normalizeEntityList(config?.value_entities || config?.value_entity);
 
   const isBlockVisible = (key) => config?.[key] !== false;
 
@@ -184,6 +318,144 @@ if (!window.__screensaverOverlayComponentInstalled) {
     const primary = getInfoTextSize();
     const secondary = Math.max(0.8, primary * 0.85);
     return `--screensaver-info-font-size:${primary}vh;--screensaver-info-secondary-font-size:${secondary}vh;`;
+  };
+
+  const normalizeStringList = (value) => {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item || "").trim()).filter(Boolean);
+    }
+    if (typeof value === "string") {
+      return value
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+
+  const getBackgroundImages = () => {
+    if (config?.background_mode === "black") {
+      return [];
+    }
+    return normalizeStringList(config?.background_images);
+  };
+
+  const getBackgroundCarouselInterval = () => {
+    const seconds = Number(config?.background_carousel_interval);
+    return (
+      (Number.isFinite(seconds) && seconds > 0
+        ? seconds
+        : DEFAULT_BACKGROUND_CAROUSEL_INTERVAL) * 1000
+    );
+  };
+
+  const setBackgroundImage = () => {
+    if (!content) {
+      return;
+    }
+
+    const layer = content.querySelector(".screensaver-background-image");
+    if (!layer) {
+      content.classList.remove("has-background");
+      return;
+    }
+
+    const images = getBackgroundImages();
+    if (!images.length) {
+      layer.style.backgroundImage = "";
+      content.classList.remove("has-background");
+      return;
+    }
+
+    if (backgroundIndex >= images.length) {
+      backgroundIndex = 0;
+    }
+    const url = images[backgroundIndex];
+    const cssUrl = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    layer.style.backgroundImage = `url("${cssUrl}")`;
+    content.classList.add("has-background");
+  };
+
+  const stopBackgroundCarousel = (clearBackground = false) => {
+    if (backgroundTimer !== undefined) {
+      window.clearInterval(backgroundTimer);
+      backgroundTimer = undefined;
+    }
+    backgroundIndex = 0;
+
+    if (!clearBackground || !content) {
+      return;
+    }
+    const layer = content.querySelector(".screensaver-background-image");
+    if (layer) {
+      layer.style.backgroundImage = "";
+    }
+    content.classList.remove("has-background");
+  };
+
+  const startBackgroundCarousel = () => {
+    if (!isVisible) {
+      return;
+    }
+
+    if (backgroundTimer !== undefined) {
+      window.clearInterval(backgroundTimer);
+      backgroundTimer = undefined;
+    }
+
+    backgroundIndex = 0;
+    setBackgroundImage();
+
+    const images = getBackgroundImages();
+    if (images.length <= 1) {
+      return;
+    }
+
+    backgroundTimer = window.setInterval(() => {
+      const currentImages = getBackgroundImages();
+      if (currentImages.length <= 1) {
+        stopBackgroundCarousel();
+        setBackgroundImage();
+        return;
+      }
+      backgroundIndex = (backgroundIndex + 1) % currentImages.length;
+      setBackgroundImage();
+    }, getBackgroundCarouselInterval());
+  };
+
+  const updateBurnInPadding = () => {
+    const top =
+      Math.floor(Math.random() * (BURN_IN_PADDING_MAX / BURN_IN_PADDING_STEP + 1)) *
+      BURN_IN_PADDING_STEP;
+    const bottom = BURN_IN_PADDING_TOTAL - top;
+    const left =
+      Math.floor(Math.random() * (BURN_IN_PADDING_MAX / BURN_IN_PADDING_STEP + 1)) *
+      BURN_IN_PADDING_STEP;
+    const right = BURN_IN_PADDING_TOTAL - left;
+
+    overlay?.style.setProperty(
+      "--screensaver-burn-in-padding",
+      `${top}px ${right}px ${bottom}px ${left}px`
+    );
+    overlay?.style.setProperty("--screensaver-burn-in-left", `${left}px`);
+    overlay?.style.setProperty("--screensaver-burn-in-right", `${right}px`);
+  };
+
+  const startBurnInMovement = () => {
+    updateBurnInPadding();
+
+    if (burnInTimer !== undefined) {
+      return;
+    }
+
+    burnInTimer = window.setInterval(updateBurnInPadding, BURN_IN_INTERVAL);
+  };
+
+  const stopBurnInMovement = () => {
+    if (burnInTimer !== undefined) {
+      window.clearInterval(burnInTimer);
+      burnInTimer = undefined;
+    }
   };
 
   const formatDateTime = (dateInput) => {
@@ -368,9 +640,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
 
   const fetchCalendarEvents = async () => {
     const hass = getHass();
-    const calendars = config?.calendars || [];
+    const calendars = getCalendars();
     if (!hass || !calendars.length) {
       events = [];
+      cgAlertActive = false;
       return;
     }
 
@@ -378,26 +651,73 @@ if (!window.__screensaverOverlayComponentInstalled) {
     const end = new Date();
     end.setDate(start.getDate() + 7);
 
-    const results = await Promise.allSettled(
-      calendars.map((calendar) =>
-        hass.callApi(
+    const fetchCalendar = async (calendar) => {
+      try {
+        const response = await hass.callApi(
+          "POST",
+          "services/calendar/get_events?return_response",
+          {
+            entity_id: calendar,
+            start_date_time: start.toISOString(),
+            end_date_time: end.toISOString(),
+          }
+        );
+        const serviceResponse = response?.service_response || response || {};
+        return serviceResponse[calendar]?.events || serviceResponse.events || [];
+      } catch (err) {
+        return hass.callApi(
           "GET",
           `calendars/${calendar}?start=${start.toISOString()}&end=${end.toISOString()}`
-        )
-      )
-    );
+        );
+      }
+    };
+
+    const results = await Promise.allSettled(calendars.map(fetchCalendar));
     const seen = new Set();
+    const getEventStart = (event) => {
+      const value =
+        typeof event.start === "object" ? event.start?.dateTime || event.start?.date : event.start;
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+    };
+    const isCgAlertCurrentlyActive = (event) => {
+      if (event.summary !== "cg_alert") {
+        return false;
+      }
+      const startValue =
+        typeof event.start === "object" ? event.start?.dateTime || event.start?.date : event.start;
+      const endValue =
+        typeof event.end === "object" ? event.end?.dateTime || event.end?.date : event.end;
+      const startDate = new Date(startValue);
+      const endDate = new Date(endValue);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        return false;
+      }
+      const now = new Date();
+      if (event.start?.date && event.end?.date) {
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        return startDate <= today && today <= endDate;
+      }
+      return startDate <= now && now <= endDate;
+    };
+    const fetchedEvents = results
+      .filter((result) => result.status === "fulfilled")
+      .flatMap((result) => result.value);
+    cgAlertActive = fetchedEvents.some(isCgAlertCurrentlyActive);
     events = results
       .filter((result) => result.status === "fulfilled")
       .flatMap((result) => result.value)
       .filter((event) => {
-        const key = `${event.summary}-${event.start?.dateTime || event.start?.date}`;
+        const startValue =
+          typeof event.start === "object" ? event.start?.dateTime || event.start?.date : event.start;
+        const key = `${event.summary}-${startValue}`;
         if (event.summary === "cg_alert" || seen.has(key)) {
           return false;
         }
         seen.add(key);
         return true;
       })
+      .sort((a, b) => getEventStart(a) - getEventStart(b))
       .slice(0, getInfoItemsLimit());
   };
 
@@ -653,10 +973,13 @@ if (!window.__screensaverOverlayComponentInstalled) {
   };
 
   const shouldAlternateInfo = () =>
-    getValueEntities().length > 0 && (config?.calendars || []).length > 0;
+    getValueEntities().length > 0 && getCalendars().length > 0;
 
   const renderInfoContent = (hass) => {
-    if (getValueEntities().length && (!config?.calendars?.length || showSensorValues)) {
+    if (
+      getValueEntities().length &&
+      (!getCalendars().length || showSensorValues || !events.length)
+    ) {
       return renderValues(hass);
     }
 
@@ -685,7 +1008,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         "sun.sun",
         ...getValueEntities(),
         ...normalizeStatusIconEntities().map((item) => item.entity),
-        ...(config?.calendars || []),
+        ...getCalendars(),
       ].filter(Boolean)
     );
 
@@ -759,7 +1082,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           return;
         }
 
-        scheduleStateRender((config?.calendars || []).includes(entityId));
+        scheduleStateRender(getCalendars().includes(entityId));
       }, "state_changed");
     } catch (err) {
       console.warn("screensaver-overlay failed to subscribe to state changes", err);
@@ -777,6 +1100,25 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
   };
 
+  const startWakeEventSubscription = async () => {
+    const hass = getHass();
+    if (!hass?.connection || wakeEventUnsub !== undefined) {
+      return;
+    }
+
+    try {
+      wakeEventUnsub = await hass.connection.subscribeEvents((event) => {
+        const eventClientId = event?.data?.client_id;
+        if (eventClientId && eventClientId !== clientId) {
+          return;
+        }
+        restoreOverlayFromBackend({ forceLocalRestore: true });
+      }, "screensaver_overlay_screen_wake");
+    } catch (err) {
+      console.warn("screensaver-overlay failed to subscribe to wake events", err);
+    }
+  };
+
   const render = () => {
     if (!content) {
       return;
@@ -787,11 +1129,14 @@ if (!window.__screensaverOverlayComponentInstalled) {
 
     if (!hass || !config) {
       content.innerHTML = `
+        <div class="screensaver-background-image"></div>
+        <div class="screensaver-background-scrim"></div>
         <div class="fallback">
           <div class="fallback-time">${html(time)}</div>
           <div class="fallback-date">${html(date)}</div>
         </div>
       `;
+      setBackgroundImage();
       return;
     }
 
@@ -807,7 +1152,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
       externalState?.state ?? weatherState?.attributes?.temperature ?? "";
 
     content.innerHTML = `
+      <div class="screensaver-background-image"></div>
+      <div class="screensaver-background-scrim"></div>
       <div class="screen">
+        ${cgAlertActive ? `<div class="cg-alert" aria-label="Calendar alert"></div>` : ""}
         ${
           isBlockVisible("show_status_icons")
             ? `<div class="status-icons">${renderStatusIcons(hass)}</div>`
@@ -855,6 +1203,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         ${renderForecastTimeline(hass)}
           </div>
     `;
+    setBackgroundImage();
   };
 
   const stopVisibleTimers = () => {
@@ -870,6 +1219,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       window.clearInterval(infoTimer);
       infoTimer = undefined;
     }
+    stopBackgroundCarousel();
   };
 
   const startVisibleTimers = async () => {
@@ -879,6 +1229,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       await subscribeHourlyForecast();
     }
     render();
+    startBackgroundCarousel();
     updateClock();
     await startStateSubscription();
 
@@ -900,12 +1251,98 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
   };
 
+  const applyOverlayVisibleStyles = () => {
+    if (!overlay) {
+      return;
+    }
+    stopInputShield();
+    overlay.style.opacity = "1";
+    overlay.style.visibility = "visible";
+    overlay.style.pointerEvents = "auto";
+    overlay.setAttribute("aria-hidden", "false");
+  };
+
+  const applyOverlayHiddenStyles = () => {
+    if (!overlay) {
+      return;
+    }
+    overlay.style.opacity = "0";
+    overlay.style.visibility = "hidden";
+    overlay.style.pointerEvents = "none";
+    overlay.setAttribute("aria-hidden", "true");
+  };
+
+  const restoreOverlayFromBackend = async ({ forceLocalRestore = false } = {}) => {
+    if (!overlay) {
+      return;
+    }
+
+    const localOverlayActive =
+      forceLocalRestore || isVisible || getStoredOverlayActive() || backendOverlayActive;
+    if (localOverlayActive && isCurrentPageAllowed()) {
+      stopIdleTimer();
+      isVisible = true;
+      setStoredOverlayActive(true);
+      applyOverlayVisibleStyles();
+      startBurnInMovement();
+      render();
+      startBackgroundCarousel();
+      updateClock();
+    }
+
+    config = (await getConfig()) || config;
+    if (!config || !(backendOverlayActive || localOverlayActive) || !isCurrentPageAllowed()) {
+      return;
+    }
+
+    stopIdleTimer();
+    isVisible = true;
+    const showVersion = ++overlayStateVersion;
+    setStoredOverlayActive(true);
+    applyOverlayVisibleStyles();
+    startBurnInMovement();
+    render();
+    startBackgroundCarousel();
+    updateClock();
+    await notifyBackend("screensaver_overlay/overlay_shown");
+    if (!isVisible || overlayStateVersion !== showVersion) {
+      return;
+    }
+    backendOverlayActive = true;
+    await startVisibleTimers();
+  };
+
+  const handleFrontendResume = async () => {
+    if (isVisible) {
+      if (!config?.entry_id) {
+        config = (await getConfig()) || config;
+      }
+      applyOverlayVisibleStyles();
+      render();
+      startBackgroundCarousel();
+      updateClock();
+      const showVersion = overlayStateVersion;
+      await notifyBackend("screensaver_overlay/overlay_shown");
+      if (!isVisible || overlayStateVersion !== showVersion) {
+        return;
+      }
+      backendOverlayActive = true;
+      return;
+    }
+    await restoreOverlayFromBackend();
+  };
+
   const showOverlay = async () => {
     if (!overlay || isVisible) {
       return;
     }
 
     config = (await getConfig()) || config;
+    if (!config) {
+      stopIdleTimer();
+      schedulePageAllowedCheck();
+      return;
+    }
     if (!isCurrentPageAllowed()) {
       stopIdleTimer();
       schedulePageAllowedCheck();
@@ -913,28 +1350,82 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
 
     isVisible = true;
-    overlay.style.opacity = "1";
-    overlay.style.visibility = "visible";
-    overlay.style.pointerEvents = "auto";
-    overlay.setAttribute("aria-hidden", "false");
+    const showVersion = ++overlayStateVersion;
+    setStoredOverlayActive(true);
+    applyOverlayVisibleStyles();
+    startBurnInMovement();
+    render();
+    startBackgroundCarousel();
+    updateClock();
     await notifyBackend("screensaver_overlay/overlay_shown");
+    if (!isVisible || overlayStateVersion !== showVersion) {
+      return;
+    }
+    backendOverlayActive = true;
     await startVisibleTimers();
   };
 
-  const hideOverlay = async () => {
+  const stopInputShield = () => {
+    if (inputShieldTimer !== undefined) {
+      window.clearTimeout(inputShieldTimer);
+      inputShieldTimer = undefined;
+    }
+
+    INPUT_SHIELD_EVENTS.forEach((eventName) => {
+      document.removeEventListener(eventName, shieldInputEvent, true);
+    });
+  };
+
+  const shieldInputEvent = (event) => {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    event.stopImmediatePropagation();
+  };
+
+  const startInputShield = () => {
+    stopInputShield();
+    const options = { capture: true, passive: false };
+    INPUT_SHIELD_EVENTS.forEach((eventName) => {
+      document.addEventListener(eventName, shieldInputEvent, options);
+    });
+    inputShieldTimer = window.setTimeout(stopInputShield, INPUT_SHIELD_MS);
+  };
+
+  const notifyOverlayHidden = async (hiddenVersion) => {
+    if (!config?.entry_id) {
+      config = (await getConfig()) || config;
+    }
+    await notifyBackend("screensaver_overlay/overlay_hidden");
+    if (!isVisible && overlayStateVersion === hiddenVersion) {
+      backendOverlayActive = false;
+    }
+  };
+
+  const hideOverlayNow = () => {
     if (!overlay || !isVisible) {
-      return;
+      return false;
     }
 
     isVisible = false;
-    overlay.style.opacity = "0";
-    overlay.style.visibility = "hidden";
-    overlay.style.pointerEvents = "none";
-    overlay.setAttribute("aria-hidden", "true");
+    const hiddenVersion = ++overlayStateVersion;
+    backendOverlayActive = false;
+    setStoredOverlayActive(false);
+    applyOverlayHiddenStyles();
+    stopBurnInMovement();
     stopVisibleTimers();
     stopStateSubscription();
     unsubscribeHourlyForecast();
-    await notifyBackend("screensaver_overlay/overlay_hidden");
+    return hiddenVersion;
+  };
+
+  const hideOverlay = async () => {
+    const hiddenVersion = hideOverlayNow();
+    if (!hiddenVersion) {
+      return;
+    }
+
+    await notifyOverlayHidden(hiddenVersion);
   };
 
   const stopPageAllowedCheck = () => {
@@ -973,22 +1464,70 @@ if (!window.__screensaverOverlayComponentInstalled) {
       return;
     }
 
+    if (!config) {
+      schedulePageAllowedCheck();
+      return;
+    }
+
     stopPageAllowedCheck();
     const timeout = Number(config?.overlay_idle_timeout || DEFAULT_IDLE_TIMEOUT) * 1000;
     console.debug("screensaver-overlay idle timer set", timeout);
     idleTimer = window.setTimeout(showOverlay, timeout);
   };
 
-  const handleInput = () => {
-    if (isVisible) {
-      hideOverlay();
+  const dismissOverlayFromInput = (event, { shield = true } = {}) => {
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    event.stopImmediatePropagation();
+
+    if (!isVisible) {
+      resetIdleTimer();
+      return;
+    }
+
+    if (shield) {
+      startInputShield();
+    }
+
+    const hiddenVersion = hideOverlayNow();
+    if (hiddenVersion) {
+      void notifyOverlayHidden(hiddenVersion);
     }
     resetIdleTimer();
   };
 
-  const refreshConfig = async () => {
-    config = (await getConfig()) || config;
+  const handleInput = (event) => {
+    if (isVisible) {
+      if (event.type === "keydown") {
+        dismissOverlayFromInput(event, { shield: false });
+      }
+      return;
+    }
     resetIdleTimer();
+  };
+
+  const installOverlayInputHandlers = () => {
+    if (!overlay || overlay.__screensaverOverlayInputHandlersInstalled) {
+      return;
+    }
+    overlay.__screensaverOverlayInputHandlersInstalled = true;
+    const options = { capture: true, passive: false };
+    overlay.addEventListener("pointerdown", dismissOverlayFromInput, options);
+    overlay.addEventListener("touchstart", dismissOverlayFromInput, options);
+    overlay.addEventListener("wheel", dismissOverlayFromInput, options);
+  };
+
+  const refreshConfig = async () => {
+    await registerClient();
+    config = (await getConfig()) || config;
+    if (isVisible) {
+      render();
+      startBackgroundCarousel();
+      updateClock();
+    } else {
+      resetIdleTimer();
+    }
     return config;
   };
 
@@ -1000,6 +1539,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
   };
 
   const handleLocationChanged = () => {
+    registerClient();
+    if (!config) {
+      schedulePageAllowedCheck();
+      return;
+    }
     if (!isCurrentPageAllowed()) {
       stopIdleTimer();
       schedulePageAllowedCheck();
@@ -1054,6 +1598,8 @@ if (!window.__screensaverOverlayComponentInstalled) {
           src: url('${ASSET_BASE}/BwModelica-HairlineExpanded.otf') format('truetype');
         }
         #${OVERLAY_ID} {
+          --screensaver-muted-text-color: #757575;
+          --screensaver-subtle-line-color: #4d4d4d;
           position: fixed;
           inset: 0;
           z-index: 999999;
@@ -1072,7 +1618,38 @@ if (!window.__screensaverOverlayComponentInstalled) {
           width: 100%;
           height: 100%;
         }
+        #${OVERLAY_ID} .screensaver-overlay-content {
+          position: relative;
+          overflow: hidden;
+          background: black;
+        }
+        #${OVERLAY_ID} .screensaver-background-image,
+        #${OVERLAY_ID} .screensaver-background-scrim {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+        }
+        #${OVERLAY_ID} .screensaver-background-image {
+          z-index: 0;
+          background-position: center;
+          background-repeat: no-repeat;
+          background-size: cover;
+          opacity: 0;
+          transition: opacity 0.8s ease;
+        }
+        #${OVERLAY_ID} .screensaver-background-scrim {
+          z-index: 1;
+          background: rgba(0, 0, 0, 0.42);
+          opacity: 0;
+          transition: opacity 0.8s ease;
+        }
+        #${OVERLAY_ID} .screensaver-overlay-content.has-background .screensaver-background-image,
+        #${OVERLAY_ID} .screensaver-overlay-content.has-background .screensaver-background-scrim {
+          opacity: 1;
+        }
         #${OVERLAY_ID} .screen {
+          position: relative;
+          z-index: 2;
           box-sizing: border-box;
           display: grid;
           grid-template-areas:
@@ -1082,12 +1659,23 @@ if (!window.__screensaverOverlayComponentInstalled) {
             "tline tline tline tline tline";
           grid-template-columns: 7vw auto auto auto 1vw;
           grid-template-rows: auto auto 1fr auto;
-          padding-top: 1vw;
-          background: black;
+          padding: var(--screensaver-burn-in-padding, 30px);
+          background: transparent;
         }
         #${OVERLAY_ID} .status-icons {
           grid-area: icon;
           margin-top: 4vh;
+        }
+        #${OVERLAY_ID} .cg-alert {
+          grid-area: alert;
+          align-self: start;
+          justify-self: end;
+          width: 14px;
+          height: 14px;
+          margin-top: 4vh;
+          border-radius: 50%;
+          background: #f44336;
+          box-shadow: 0 0 10px rgba(244, 67, 54, 0.9);
         }
         #${OVERLAY_ID} .weather-description {
           grid-area: icon;
@@ -1104,7 +1692,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         }
         #${OVERLAY_ID} ha-icon {
           --mdc-icon-size: 4.5vh;
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
           margin: 0 8px;
         }
         #${OVERLAY_ID} .weather-icon {
@@ -1120,7 +1708,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
         #${OVERLAY_ID} .temperatures {
           grid-area: temp;
           justify-self: end;
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
+        }
+        #${OVERLAY_ID} .screensaver-overlay-content.has-background .temperatures {
+          --screensaver-muted-text-color: #bdbdbd;
         }
         #${OVERLAY_ID} .temperature-svg {
           display: block;
@@ -1130,7 +1721,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         }
         #${OVERLAY_ID} .temperature-home,
         #${OVERLAY_ID} .temperature-text {
-          fill: #757575;
+          fill: var(--screensaver-muted-text-color);
         }
         #${OVERLAY_ID} .temperature-text {
           font-family: 'bw_font', var(--primary-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
@@ -1141,7 +1732,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           font-family: 'bw_font', monospace;
           font-size: 4vh;
           font-weight: 700;
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
           text-align: right;
         }
         #${OVERLAY_ID} .clock {
@@ -1172,6 +1763,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
           justify-self: end;
           text-align: right;
           line-height: 1;
+          font-family: var(--primary-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+        }
+        #${OVERLAY_ID} .screensaver-overlay-content.has-background .info {
+          --screensaver-muted-text-color: #bdbdbd;
         }
         #${OVERLAY_ID} #entityState {
           display: flex;
@@ -1188,7 +1783,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         #${OVERLAY_ID} .friendly-name {
           display: flex;
           justify-content: flex-end;
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
           font-size: var(--screensaver-info-secondary-font-size, 1.7vh);
         }
         #${OVERLAY_ID} .value {
@@ -1202,7 +1797,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           margin-right: 4px;
         }
         #${OVERLAY_ID} .unit {
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
           font-style: italic;
         }
         #${OVERLAY_ID} .events {
@@ -1224,7 +1819,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           font-size: var(--screensaver-info-font-size, 2vh);
         }
         #${OVERLAY_ID} .event-time {
-          color: #757575;
+          color: var(--screensaver-muted-text-color);
           text-align: right;
           font-size: var(--screensaver-info-secondary-font-size, 1.7vh);
         }
@@ -1236,6 +1831,16 @@ if (!window.__screensaverOverlayComponentInstalled) {
         #${OVERLAY_ID} .forecast {
           grid-area: tline;
           margin-top: 7vh;
+          font-family: var(--primary-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+          position: relative;
+          z-index: 0;
+        }
+        #${OVERLAY_ID} .forecast::before {
+          content: "";
+          position: absolute;
+          inset: 0 calc(var(--screensaver-burn-in-right, 30px) * -1) -8px calc(var(--screensaver-burn-in-left, 30px) * -1);
+          background: rgba(0, 0, 0, 0.7);
+          z-index: -1;
         }
         #${OVERLAY_ID} .gradient-bar {
           width: 100%;
@@ -1243,11 +1848,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
           background: linear-gradient(
             to right,
             black,
-            rgba(255, 255, 255, 0.3),
+            var(--screensaver-subtle-line-color),
             black
           );
           position: relative;
-          top: 42px;
+          top: 60px;
         }
         #${OVERLAY_ID} .timeline {
           display: flex;
@@ -1266,15 +1871,15 @@ if (!window.__screensaverOverlayComponentInstalled) {
           height: -webkit-fill-available;
         }
         #${OVERLAY_ID} .condition {
-          height: 50px;
+          height: 72px;
         }
         #${OVERLAY_ID} .condition img {
-          width: 40px;
-          height: 40px;
+          width: 58px;
+          height: 58px;
         }
         #${OVERLAY_ID} .details {
-          font-size: 0.9em;
-          color: #757575;
+          font-size: 1.3em;
+          color: var(--screensaver-muted-text-color);
         }
         #${OVERLAY_ID} .details .hour {
           font-weight: bold;
@@ -1290,11 +1895,12 @@ if (!window.__screensaverOverlayComponentInstalled) {
         }
         #${OVERLAY_ID} .details .precipitation {
           color: #9e9e9e;
-          font-size: 0.8em;
+          font-size: 1.15em;
         }
         #${OVERLAY_ID} .fallback {
           position: absolute;
           inset: 0;
+          z-index: 2;
           display: flex;
           flex-direction: column;
           align-items: center;
@@ -1313,14 +1919,34 @@ if (!window.__screensaverOverlayComponentInstalled) {
     `;
     content = overlay.querySelector(".screensaver-overlay-content");
     document.body.appendChild(overlay);
+    installOverlayInputHandlers();
   };
 
   const bootstrap = async () => {
+    clientId = getClientId();
     createOverlay();
+    installOverlayInputHandlers();
+    if (getStoredOverlayActive()) {
+      isVisible = true;
+      applyOverlayVisibleStyles();
+      render();
+    }
     installLocationWatcher();
     await waitForHass();
+    window.__screensaverOverlayComponentClientId = clientId;
+    await registerClient();
     config = await getConfig();
-    resetIdleTimer();
+    await startWakeEventSubscription();
+    if (backendOverlayActive) {
+      await restoreOverlayFromBackend();
+    } else {
+      if (isVisible) {
+        isVisible = false;
+        setStoredOverlayActive(false);
+        applyOverlayHiddenStyles();
+      }
+      resetIdleTimer();
+    }
     console.debug("screensaver-overlay installed", { hasConfig: !!config, config });
     window.__screensaverOverlayComponentShow = showOverlay;
     window.__screensaverOverlayComponentHide = hideOverlay;
@@ -1330,9 +1956,16 @@ if (!window.__screensaverOverlayComponentInstalled) {
 
     window.addEventListener("pointerdown", handleInput, { passive: true });
     window.addEventListener("touchstart", handleInput, { passive: true });
-    window.addEventListener("keydown", handleInput, { passive: true });
+    window.addEventListener("keydown", handleInput, { passive: false });
     window.addEventListener("wheel", handleInput, { passive: true });
     window.addEventListener("screensaver-overlay-location-changed", handleLocationChanged);
+    window.addEventListener("focus", handleFrontendResume);
+    window.addEventListener("pageshow", handleFrontendResume);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        handleFrontendResume();
+      }
+    });
   };
 
   if (document.body) {
