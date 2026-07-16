@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 
@@ -75,6 +76,7 @@ PANEL_REGISTERED = "_panel_registered"
 WEBSOCKET_REGISTERED = "_websocket_registered"
 ENTITY_LIST_CONFIG_KEYS = ("calendars", "value_entities")
 PLATFORMS = (Platform.BINARY_SENSOR,)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 @callback
