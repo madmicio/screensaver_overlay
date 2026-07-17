@@ -30,6 +30,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
   let stateChangedUnsub = undefined;
   let forecastUnsub = undefined;
   let wakeEventUnsub = undefined;
+  let sleepEventUnsub = undefined;
   let config = null;
   let events = [];
   let hourlyForecast = [];
@@ -46,11 +47,15 @@ if (!window.__screensaverOverlayComponentInstalled) {
   let activeBackgroundDomVersion = -1;
   let lastClockDateKey = "";
   let derivedConfig = null;
+  let previousDocumentBackground = null;
+  let wakeRepaintTimers = [];
   const forecastTimeCache = new Map();
   const preloadedBackgroundImages = new Set();
   let inputShieldTimer = undefined;
+  let sleepShieldReleaseTimer = undefined;
 
   const INPUT_SHIELD_MS = 350;
+  const WAKE_SHIELD_RELEASE_MS = 600;
   const INPUT_SHIELD_EVENTS = [
     "pointerdown",
     "pointerup",
@@ -270,6 +275,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         config?.internal_temperature,
         config?.external_temperature,
         config?.rain_sensor,
+        config?.screen_switch,
         "sun.sun",
         ...valueEntities,
         ...statusIconEntities.map((item) => item.entity),
@@ -1228,6 +1234,121 @@ if (!window.__screensaverOverlayComponentInstalled) {
     return getDerivedConfig().watchedEntities;
   };
 
+  const setDocumentWakeBackground = (active) => {
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root || !body) {
+      return;
+    }
+
+    if (active) {
+      if (!previousDocumentBackground) {
+        previousDocumentBackground = {
+          root: root.style.backgroundColor,
+          rootPriority: root.style.getPropertyPriority("background-color"),
+          body: body.style.backgroundColor,
+          bodyPriority: body.style.getPropertyPriority("background-color"),
+        };
+      }
+      root.classList.add("screensaver-overlay-document-active");
+      root.style.setProperty("background-color", "black", "important");
+      body.style.setProperty("background-color", "black", "important");
+      return;
+    }
+
+    root.classList.remove("screensaver-overlay-document-active");
+    if (!previousDocumentBackground) {
+      return;
+    }
+    root.style.setProperty(
+      "background-color",
+      previousDocumentBackground.root,
+      previousDocumentBackground.rootPriority
+    );
+    body.style.setProperty(
+      "background-color",
+      previousDocumentBackground.body,
+      previousDocumentBackground.bodyPriority
+    );
+    previousDocumentBackground = null;
+  };
+
+  const clearWakeRepaintTimers = () => {
+    wakeRepaintTimers.forEach((timer) => window.clearTimeout(timer));
+    wakeRepaintTimers = [];
+  };
+
+  const forceOverlayRepaint = () => {
+    if (!overlay || !content || !isVisible) {
+      return;
+    }
+
+    overlay.style.visibility = "visible";
+    overlay.style.opacity = "1";
+    overlay.style.backgroundColor = "black";
+    content.style.backgroundColor = "black";
+    overlay.style.setProperty(
+      "--screensaver-wake-repaint-nudge",
+      `${Date.now() % 2}px`
+    );
+    void overlay.offsetHeight;
+    window.requestAnimationFrame(() => {
+      if (!overlay || !isVisible) {
+        return;
+      }
+      overlay.style.opacity = "1";
+      void overlay.offsetHeight;
+    });
+  };
+
+  const scheduleWakeRepaints = () => {
+    clearWakeRepaintTimers();
+    [0, 50, 150, 350, 750, 1500, 2500].forEach((delay) => {
+      wakeRepaintTimers.push(window.setTimeout(forceOverlayRepaint, delay));
+    });
+  };
+
+  const applyScreenSleepShield = () => {
+    if (!overlay || !content || !isVisible) {
+      return;
+    }
+    setDocumentWakeBackground(true);
+    overlay.classList.add("screen-sleeping");
+    overlay.classList.add("resume-immediate");
+    overlay.style.visibility = "visible";
+    overlay.style.opacity = "1";
+    overlay.style.pointerEvents = "auto";
+    overlay.style.backgroundColor = "black";
+    content.style.backgroundColor = "black";
+    overlay.setAttribute("aria-hidden", "false");
+    forceOverlayRepaint();
+  };
+
+  const clearScreenSleepShield = () => {
+    if (sleepShieldReleaseTimer !== undefined) {
+      window.clearTimeout(sleepShieldReleaseTimer);
+      sleepShieldReleaseTimer = undefined;
+    }
+    if (!overlay) {
+      return;
+    }
+    overlay.classList.remove("screen-sleeping");
+    overlay.classList.remove("resume-immediate");
+  };
+
+  const releaseScreenSleepShieldAfterWake = () => {
+    if (!overlay?.classList.contains("screen-sleeping")) {
+      return;
+    }
+    if (sleepShieldReleaseTimer !== undefined) {
+      window.clearTimeout(sleepShieldReleaseTimer);
+    }
+    sleepShieldReleaseTimer = window.setTimeout(
+      clearScreenSleepShield,
+      WAKE_SHIELD_RELEASE_MS
+    );
+  };
+
   const getClockParts = () => {
     const hass = getHass();
     const now = new Date();
@@ -1301,6 +1422,19 @@ if (!window.__screensaverOverlayComponentInstalled) {
           return;
         }
 
+        if (entityId === config?.screen_switch && isVisible) {
+          const newState = event?.data?.new_state?.state;
+          if (newState === "off") {
+            applyScreenSleepShield();
+            return;
+          }
+          if (newState === "on") {
+            restoreOverlayFromBackend({ forceLocalRestore: true });
+            releaseScreenSleepShieldAfterWake();
+            return;
+          }
+        }
+
         scheduleStateRender(getCalendars().includes(entityId));
       }, "state_changed");
     } catch (err) {
@@ -1321,17 +1455,25 @@ if (!window.__screensaverOverlayComponentInstalled) {
 
   const startWakeEventSubscription = async () => {
     const hass = getHass();
-    if (!hass?.connection || wakeEventUnsub !== undefined) {
+    if (!hass?.connection || wakeEventUnsub !== undefined || sleepEventUnsub !== undefined) {
       return;
     }
 
     try {
+      sleepEventUnsub = await hass.connection.subscribeEvents((event) => {
+        const eventClientId = event?.data?.client_id;
+        if (eventClientId && eventClientId !== clientId) {
+          return;
+        }
+        applyScreenSleepShield();
+      }, "screensaver_overlay_screen_sleep");
       wakeEventUnsub = await hass.connection.subscribeEvents((event) => {
         const eventClientId = event?.data?.client_id;
         if (eventClientId && eventClientId !== clientId) {
           return;
         }
         restoreOverlayFromBackend({ forceLocalRestore: true });
+        releaseScreenSleepShieldAfterWake();
       }, "screensaver_overlay_screen_wake");
     } catch (err) {
       console.warn("screensaver-overlay failed to subscribe to wake events", err);
@@ -1424,6 +1566,12 @@ if (!window.__screensaverOverlayComponentInstalled) {
     setBackgroundImage();
   };
 
+  const ensureOverlayRendered = () => {
+    if (!content?.childElementCount) {
+      render();
+    }
+  };
+
   const stopVisibleTimers = () => {
     if (clockTimer !== undefined) {
       window.clearInterval(clockTimer);
@@ -1473,6 +1621,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
       return;
     }
     stopInputShield();
+    setDocumentWakeBackground(true);
+    const keepSleepShield = overlay.classList.contains("screen-sleeping");
+    if (!immediate && !keepSleepShield) {
+      clearScreenSleepShield();
+    }
     if (immediate) {
       overlay.classList.add("resume-immediate");
     }
@@ -1481,8 +1634,12 @@ if (!window.__screensaverOverlayComponentInstalled) {
     overlay.style.pointerEvents = "auto";
     overlay.setAttribute("aria-hidden", "false");
     if (immediate) {
+      scheduleWakeRepaints();
       window.requestAnimationFrame(() => {
-        overlay?.classList.remove("resume-immediate");
+        if (!keepSleepShield) {
+          clearScreenSleepShield();
+          overlay?.classList.remove("resume-immediate");
+        }
       });
     }
   };
@@ -1495,6 +1652,9 @@ if (!window.__screensaverOverlayComponentInstalled) {
     overlay.style.visibility = "hidden";
     overlay.style.pointerEvents = "none";
     overlay.setAttribute("aria-hidden", "true");
+    clearScreenSleepShield();
+    clearWakeRepaintTimers();
+    setDocumentWakeBackground(false);
   };
 
   const restoreOverlayFromBackend = async ({ forceLocalRestore = false } = {}) => {
@@ -1510,7 +1670,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       setStoredOverlayActive(true);
       applyOverlayVisibleStyles({ immediate: true });
       startBurnInMovement();
-      render();
+      ensureOverlayRendered();
       startBackgroundCarousel();
       updateClock();
     }
@@ -1526,7 +1686,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     setStoredOverlayActive(true);
     applyOverlayVisibleStyles({ immediate: true });
     startBurnInMovement();
-    render();
+    ensureOverlayRendered();
     startBackgroundCarousel();
     updateClock();
     await notifyBackend("screensaver_overlay/overlay_shown");
@@ -1543,9 +1703,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
         config = (await getConfig()) || config;
       }
       applyOverlayVisibleStyles({ immediate: true });
-      render();
+      ensureOverlayRendered();
       startBackgroundCarousel();
       updateClock();
+      releaseScreenSleepShieldAfterWake();
       const showVersion = overlayStateVersion;
       await notifyBackend("screensaver_overlay/overlay_shown");
       if (!isVisible || overlayStateVersion !== showVersion) {
@@ -1822,6 +1983,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
           font-family: 'bw_font';
           src: url('${ASSET_BASE}/BwModelica-HairlineExpanded.otf') format('truetype');
         }
+        html.screensaver-overlay-document-active,
+        html.screensaver-overlay-document-active body {
+          background: #000 !important;
+        }
         #${OVERLAY_ID} {
           --screensaver-muted-text-color: #757575;
           --screensaver-subtle-line-color: #4d4d4d;
@@ -1836,10 +2001,21 @@ if (!window.__screensaverOverlayComponentInstalled) {
           transition: opacity 0.6s ease;
           overflow: hidden;
           user-select: none;
+          outline: var(--screensaver-wake-repaint-nudge, 0px) solid transparent;
           font-family: 'bw_font', var(--primary-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
         }
         #${OVERLAY_ID}.resume-immediate {
           transition: none;
+        }
+        #${OVERLAY_ID}.screen-sleeping {
+          background: #000 !important;
+          opacity: 1 !important;
+          visibility: visible !important;
+          transition: none !important;
+        }
+        #${OVERLAY_ID}.screen-sleeping .screensaver-overlay-content {
+          opacity: 0 !important;
+          transition: none !important;
         }
         #${OVERLAY_ID} .screensaver-overlay-content,
         #${OVERLAY_ID} .screen {
@@ -2071,7 +2247,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
         #${OVERLAY_ID} .forecast::before {
           content: "";
           position: absolute;
-          inset: 0 calc(var(--screensaver-burn-in-right, 30px) * -1) -8px calc(var(--screensaver-burn-in-left, 30px) * -1);
+          inset:
+            0
+            calc(-30px + var(--screensaver-burn-in-x, 0px))
+            -8px
+            calc(-30px - var(--screensaver-burn-in-x, 0px));
           background: rgba(0, 0, 0, var(--screensaver-hourly-forecast-background-opacity, 0.7));
           z-index: -1;
         }
@@ -2161,7 +2341,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     installOverlayInputHandlers();
     if (getStoredOverlayActive()) {
       isVisible = true;
-      applyOverlayVisibleStyles();
+      applyOverlayVisibleStyles({ immediate: true });
       render();
     }
     installLocationWatcher();

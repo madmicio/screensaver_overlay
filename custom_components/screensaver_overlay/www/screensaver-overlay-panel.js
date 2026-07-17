@@ -122,11 +122,11 @@ const PANEL_TRANSLATIONS = {
     externalTemperature: "External temperature",
     fileTooLarge: "File too large",
     fullyHost: "Fully Kiosk host/IP",
-    fullyHostHelp: "Required only for Fully Kiosk. The text above is only an example.",
+    fullyHostHelp: "Required only for Fully Kiosk.",
     fullyHttps: "Use HTTPS for Fully Kiosk REST",
     fullyPassword: "Fully Remote Admin password",
     fullyPort: "Fully Kiosk port",
-    fullyPortHelp: "Optional field. Fully uses 2323 when it is empty.",
+    fullyPortHelp: "Default: 2323.",
     fullyScreenSwitchHelp:
       "In Fully Kiosk mode, the screen is turned on and off through Remote Admin REST, so a Home Assistant switch is not needed.",
     global: "Global",
@@ -266,11 +266,11 @@ const PANEL_TRANSLATIONS = {
     externalTemperature: "Temperatura esterna",
     fileTooLarge: "File troppo grande",
     fullyHost: "Host/IP Fully Kiosk",
-    fullyHostHelp: "Obbligatorio solo per Fully Kiosk. Il testo sopra e solo un esempio.",
+    fullyHostHelp: "Obbligatorio solo per Fully Kiosk.",
     fullyHttps: "Usa HTTPS per Fully Kiosk REST",
     fullyPassword: "Password Remote Admin Fully",
     fullyPort: "Porta Fully Kiosk",
-    fullyPortHelp: "Campo opzionale. Fully usa 2323 se resta vuoto.",
+    fullyPortHelp: "Default: 2323.",
     fullyScreenSwitchHelp:
       "In modalita Fully Kiosk lo schermo viene acceso e spento tramite REST Remote Admin, quindi non serve indicare uno switch Home Assistant.",
     global: "Globale",
@@ -2535,26 +2535,28 @@ class ScreensaverOverlayPanel extends HTMLElement {
   }
 
   _renderFullyBrightnessFields(overrides) {
+    const fullyPort = overrides.fully_port || 2323;
+
     return `
       <label>
         ${this._html(this._t("fullyHost"))}
         <input id="fully-host" value="${this._html(
           overrides.fully_host ?? ""
-        )}" placeholder="Esempio: 192.168.2.96 oppure 192.168.2.96:2323" />
+        )}" />
         <span class="muted">${this._html(this._t("fullyHostHelp"))}</span>
       </label>
       <label>
         ${this._html(this._t("fullyPort"))}
         <input id="fully-port" type="number" min="1" max="65535" step="1" value="${this._html(
-          overrides.fully_port ?? ""
-        )}" placeholder="Default se vuoto: 2323" />
+          fullyPort
+        )}" />
         <span class="muted">${this._html(this._t("fullyPortHelp"))}</span>
       </label>
       <label>
         ${this._html(this._t("fullyPassword"))}
         <input id="fully-password" type="password" value="${this._html(
           overrides.fully_password ?? ""
-        )}" placeholder="Password Fully" />
+        )}" />
       </label>
       <label class="checkbox">
         <input id="fully-use-https" type="checkbox" ${

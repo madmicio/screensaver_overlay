@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from functools import partial
 import logging
@@ -396,6 +397,16 @@ class ScreensaverOverlayRuntime:
         if not self._motion_allows_screen_off(config):
             return
 
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_screen_sleep",
+            {
+                "client_id": str(client_id or ""),
+                "screen_control": "fully_rest"
+                if self._has_fully_rest_config(config)
+                else self._screen_switch(config),
+            },
+        )
+        await asyncio.sleep(0.2)
         await self._async_set_screen_power(config, False)
 
     @callback
