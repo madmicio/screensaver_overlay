@@ -73,16 +73,6 @@ Add screenshots under:
 images/
 ```
 
-Suggested image placeholders:
-
-```markdown
-![Integration setup](images/integration-setup.png)
-![Browser list](images/browser-list.png)
-![Browser settings](images/browser-settings.png)
-![Brightness settings](images/brightness-settings.png)
-![Binary sensor option](images/binary-sensor-option.png)
-![Overlay preview](images/overlay-preview.png)
-```
 
 #### Updating
 
@@ -511,16 +501,6 @@ Inserisci gli screenshot in:
 images/
 ```
 
-Placeholder consigliati:
-
-```markdown
-![Configurazione integrazione](images/integration-setup.png)
-![Lista browser](images/browser-list.png)
-![Impostazioni browser](images/browser-settings.png)
-![Impostazioni luminosita](images/brightness-settings.png)
-![Opzione binary sensor](images/binary-sensor-option.png)
-![Anteprima overlay](images/overlay-preview.png)
-```
 
 #### Aggiornamento
 
