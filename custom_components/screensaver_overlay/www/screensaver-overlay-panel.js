@@ -14,6 +14,7 @@ const GLOBAL_DEFAULTS = {
   background_carousel_interval: 60,
   weather_icon_size: 27,
   weather_description_text_size: 1.8,
+  hourly_forecast_background_opacity: 70,
   info_text_size: 2,
   info_items_limit: 5,
   show_status_icons: true,
@@ -138,6 +139,7 @@ const PANEL_TRANSLATIONS = {
     globalSettings: "Global settings",
     globalSettingsHelp:
       "Global values used by browsers when a field remains global.",
+    hourlyForecastBackgroundOpacity: "Hourly forecast background opacity (%)",
     inheritGlobal: "Use global",
     internalTemperature: "Internal temperature",
     invalidFormat: "Unsupported format",
@@ -281,6 +283,7 @@ const PANEL_TRANSLATIONS = {
     globalSettings: "Impostazioni generali",
     globalSettingsHelp:
       "Valori globali usati dai browser quando un campo resta su globale.",
+    hourlyForecastBackgroundOpacity: "Opacita sfondo meteo orario (%)",
     inheritGlobal: "Usa globale",
     internalTemperature: "Temperatura interna",
     invalidFormat: "Formato non supportato",
@@ -1260,6 +1263,10 @@ class ScreensaverOverlayPanel extends HTMLElement {
           <label>
             ${this._html(this._t("weatherDescriptionTextSize"))}
             <input id="global-weather-description-text-size" type="number" min="1" max="6" step="0.1" value="${this._html(config.weather_description_text_size ?? 1.8)}" />
+          </label>
+          <label>
+            ${this._html(this._t("hourlyForecastBackgroundOpacity"))}
+            <input id="global-hourly-forecast-background-opacity" type="number" min="0" max="100" step="1" value="${this._html(config.hourly_forecast_background_opacity ?? GLOBAL_DEFAULTS.hourly_forecast_background_opacity)}" />
           </label>
           <label>
             ${this._html(this._t("internalTemperature"))}
@@ -2273,6 +2280,12 @@ class ScreensaverOverlayPanel extends HTMLElement {
             )}" placeholder="${this._html(this._t("global"))}" />
           </label>
           <label>
+            ${this._html(this._t("hourlyForecastBackgroundOpacity"))}
+            <input id="hourly-forecast-background-opacity" type="number" min="0" max="100" step="1" value="${this._html(
+              overrides.hourly_forecast_background_opacity ?? ""
+            )}" placeholder="${this._html(this._t("global"))}" />
+          </label>
+          <label>
             ${this._html(this._t("internalTemperature"))}
             ${this._renderEntityPicker(
               "internal-temperature",
@@ -2713,6 +2726,12 @@ class ScreensaverOverlayPanel extends HTMLElement {
         this._numberOrEmpty(ev.target.value)
       )
     );
+    bindInput("#global-hourly-forecast-background-opacity", (ev) =>
+      this._setGlobalValue(
+        "hourly_forecast_background_opacity",
+        this._numberOrEmpty(ev.target.value)
+      )
+    );
     bindValueChanged("#global-internal-temperature", (value) =>
       this._setGlobalValue("internal_temperature", value)
     );
@@ -2785,6 +2804,12 @@ class ScreensaverOverlayPanel extends HTMLElement {
     bindInput("#weather-description-text-size", (ev) =>
       this._setOverride(
         "weather_description_text_size",
+        this._numberOrEmpty(ev.target.value)
+      )
+    );
+    bindInput("#hourly-forecast-background-opacity", (ev) =>
+      this._setOverride(
+        "hourly_forecast_background_opacity",
         this._numberOrEmpty(ev.target.value)
       )
     );

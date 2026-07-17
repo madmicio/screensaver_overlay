@@ -43,6 +43,7 @@ GLOBAL_CONFIG_KEYS = {
     "weather_icon_size",
     "weather_description_entity",
     "weather_description_text_size",
+    "hourly_forecast_background_opacity",
     "internal_temperature",
     "external_temperature",
     "rain_sensor",
@@ -81,6 +82,7 @@ BOOL_CONFIG_KEYS = {
 NUMBER_CONFIG_KEYS = {
     "weather_icon_size",
     "weather_description_text_size",
+    "hourly_forecast_background_opacity",
     "info_text_size",
     "info_items_limit",
     "overlay_idle_timeout",
@@ -373,6 +375,8 @@ def _clean_global_config(config: dict) -> dict:
             except (TypeError, ValueError):
                 cleaned[key] = ""
                 continue
+            if key == "hourly_forecast_background_opacity":
+                number = min(max(number, 0), 100)
             cleaned[key] = int(number) if number.is_integer() else number
             continue
         cleaned[key] = str(value or "").strip()

@@ -174,7 +174,8 @@ The overlay can show:
 - value entities
 - status icons
 - black background or configured images
-- image carousel
+- image carousel with fade transition
+- configurable hourly forecast background opacity
 
 #### Features Enabled By Configured Entities
 
@@ -184,6 +185,7 @@ The overlay enables different features depending on which entities and browser o
 | --- | --- |
 | `weather_entity` | Main weather block, current weather icon, weather temperature fallback, units, and hourly forecast source |
 | `weather_description_entity` | Textual weather description under the weather icon, when the entity state is valid |
+| `hourly_forecast_background_opacity` | Background opacity for the lower hourly forecast bar |
 | `external_temperature` | External temperature override instead of `weather_entity.attributes.temperature` |
 | `internal_temperature` | Internal temperature display together with the external temperature |
 | `rain_sensor` | Animated rain icon when the sensor state is exactly `raining` |
@@ -242,9 +244,32 @@ The panel supports:
 - black background
 - uploaded images
 - bundled default images
-- carousel with configurable interval
+- carousel with configurable interval and fade transition
 
 Uploaded backgrounds are stored in Home Assistant and can be selected globally or per browser.
+
+Recommended background image specifications:
+
+| Setting | Recommendation |
+| --- | --- |
+| Format | WebP (`.webp`) |
+| Resolution | Match the tablet display or slightly above it |
+| Full HD tablets | About `1920x1080` |
+| 1280x800 tablets | About `1280x800` |
+| WebP quality | `75-85` |
+| Avoid | 4K images, very large PNG files, animated GIFs |
+
+JPEG is also acceptable when WebP is not available; use about `75-85` quality. For carousel and fade usage, image dimensions matter as much as the format: avoid files much larger than the real tablet resolution.
+
+#### Hourly Forecast Background
+
+The lower hourly forecast bar has a configurable background opacity:
+
+```text
+Hourly forecast background opacity (%)
+```
+
+The value is between `0` and `100`, with `70` as the default. It can be set globally and overridden per browser/tablet.
 
 ### Brightness
 
@@ -602,7 +627,8 @@ L'overlay puo mostrare:
 - entita valore
 - icone di stato
 - sfondo nero o immagini configurate
-- carosello immagini
+- carosello immagini con transizione fade
+- opacita configurabile dello sfondo meteo orario
 
 #### Funzioni Abilitate Dalle Entita Configurate
 
@@ -612,6 +638,7 @@ L'overlay abilita funzioni diverse in base alle entita e alle opzioni browser co
 | --- | --- |
 | `weather_entity` | Blocco meteo principale, icona meteo corrente, fallback temperatura meteo, unita di misura e sorgente previsioni orarie |
 | `weather_description_entity` | Descrizione testuale del meteo sotto l'icona, quando lo stato dell'entita e valido |
+| `hourly_forecast_background_opacity` | Opacita dello sfondo della barra meteo oraria inferiore |
 | `external_temperature` | Temperatura esterna dedicata al posto di `weather_entity.attributes.temperature` |
 | `internal_temperature` | Visualizzazione temperatura interna insieme alla temperatura esterna |
 | `rain_sensor` | Icona pioggia animata quando lo stato del sensore e esattamente `raining` |
@@ -670,9 +697,32 @@ Il pannello permette di usare:
 - sfondo nero
 - immagini caricate
 - immagini predefinite incluse
-- carosello con intervallo configurabile
+- carosello con intervallo configurabile e transizione fade
 
 Gli sfondi caricati vengono salvati in Home Assistant e possono essere selezionati per configurazione globale o per singolo browser.
+
+Specifiche consigliate per le immagini di sfondo:
+
+| Impostazione | Consiglio |
+| --- | --- |
+| Formato | WebP (`.webp`) |
+| Risoluzione | Uguale o poco superiore al display del tablet |
+| Tablet Full HD | Circa `1920x1080` |
+| Tablet 1280x800 | Circa `1280x800` |
+| Qualita WebP | `75-85` |
+| Da evitare | Immagini 4K, PNG molto pesanti, GIF animate |
+
+JPEG va bene se non puoi usare WebP; usa qualita circa `75-85`. Per carosello e fade conta anche la dimensione: evita immagini molto piu grandi della risoluzione reale del tablet.
+
+#### Sfondo Meteo Orario
+
+La barra inferiore del meteo orario ha opacita dello sfondo configurabile:
+
+```text
+Opacita sfondo meteo orario (%)
+```
+
+Il valore va da `0` a `100`, con default `70`. Puo essere impostato globalmente e sovrascritto per singolo browser/tablet.
 
 ### Luminosita
 

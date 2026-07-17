@@ -5,6 +5,7 @@ const DEFAULT_INFO_ITEMS_LIMIT = 5;
 const DEFAULT_WEATHER_ICON_SIZE = 27;
 const DEFAULT_WEATHER_DESCRIPTION_TEXT_SIZE = 1.8;
 const DEFAULT_BACKGROUND_CAROUSEL_INTERVAL = 60;
+const DEFAULT_HOURLY_FORECAST_BACKGROUND_OPACITY = 70;
 const BURN_IN_PADDING_TOTAL = 60;
 const BURN_IN_PADDING_MAX = 30;
 const BURN_IN_PADDING_STEP = 5;
@@ -39,6 +40,14 @@ if (!window.__screensaverOverlayComponentInstalled) {
   let overlayStateVersion = 0;
   let showSensorValues = false;
   let backgroundIndex = 0;
+  let activeBackgroundLayer = 0;
+  let backgroundDomVersion = 0;
+  let activeBackgroundSignature = "";
+  let activeBackgroundDomVersion = -1;
+  let lastClockDateKey = "";
+  let derivedConfig = null;
+  const forecastTimeCache = new Map();
+  const preloadedBackgroundImages = new Set();
   let inputShieldTimer = undefined;
 
   const INPUT_SHIELD_MS = 350;
@@ -175,6 +184,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         config.calendars = calendars.length ? calendars : globalCalendars;
         config.value_entities = valueEntities.length ? valueEntities : globalValueEntities;
       }
+      invalidateDerivedConfig();
       backendOverlayActive = !!result.overlay_active;
       return config;
     } catch (err) {
@@ -203,6 +213,19 @@ if (!window.__screensaverOverlayComponentInstalled) {
   const formatTime = (date) =>
     date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+  const formatForecastTime = (datetime) => {
+    const key = String(datetime || "");
+    if (forecastTimeCache.has(key)) {
+      return forecastTimeCache.get(key);
+    }
+    const formatted = new Date(datetime).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    forecastTimeCache.set(key, formatted);
+    return formatted;
+  };
+
   const formatDate = (date, language) =>
     date.toLocaleDateString(language || "en-US", {
       weekday: "short",
@@ -212,6 +235,57 @@ if (!window.__screensaverOverlayComponentInstalled) {
     });
 
   const getWeatherEntity = () => config?.weather_entity || config?.entity;
+
+  const invalidateDerivedConfig = () => {
+    derivedConfig = null;
+  };
+
+  const getDerivedConfig = () => {
+    if (derivedConfig) {
+      return derivedConfig;
+    }
+
+    const calendars = normalizeEntityList(config?.calendars);
+    const valueEntities = normalizeEntityList(config?.value_entities || config?.value_entity);
+    const statusIconEntities = [
+      ...(config?.status_icon_entities || []),
+      ...(config?.entity_icon || []),
+    ]
+      .map((item) => {
+        if (typeof item === "string") {
+          return { entity: item, icon: undefined };
+        }
+        return { entity: item?.entity, icon: item?.icon };
+      })
+      .filter((item) => item.entity);
+    const backgroundImages =
+      config?.background_mode === "black"
+        ? []
+        : normalizeStringList(config?.background_images);
+
+    const watchedEntities = new Set(
+      [
+        getWeatherEntity(),
+        config?.weather_description_entity,
+        config?.internal_temperature,
+        config?.external_temperature,
+        config?.rain_sensor,
+        "sun.sun",
+        ...valueEntities,
+        ...statusIconEntities.map((item) => item.entity),
+        ...calendars,
+      ].filter(Boolean)
+    );
+
+    derivedConfig = {
+      calendars,
+      valueEntities,
+      statusIconEntities,
+      backgroundImages,
+      watchedEntities,
+    };
+    return derivedConfig;
+  };
 
   const registerClient = async () => {
     const hass = getHass();
@@ -233,10 +307,9 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
   };
 
-  const getCalendars = () => normalizeEntityList(config?.calendars);
+  const getCalendars = () => getDerivedConfig().calendars;
 
-  const getValueEntities = () =>
-    normalizeEntityList(config?.value_entities || config?.value_entity);
+  const getValueEntities = () => getDerivedConfig().valueEntities;
 
   const isBlockVisible = (key) => config?.[key] !== false;
 
@@ -302,6 +375,13 @@ if (!window.__screensaverOverlayComponentInstalled) {
     return Number.isFinite(size) && size > 0 ? size : DEFAULT_WEATHER_ICON_SIZE;
   };
 
+  const getHourlyForecastBackgroundOpacity = () => {
+    const opacity = Number(config?.hourly_forecast_background_opacity);
+    const percentage =
+      Number.isFinite(opacity) ? opacity : DEFAULT_HOURLY_FORECAST_BACKGROUND_OPACITY;
+    return Math.min(Math.max(percentage, 0), 100) / 100;
+  };
+
   const getInfoTextSize = () => {
     const size = Number(config?.info_text_size);
     return Number.isFinite(size) && size > 0 ? size : DEFAULT_INFO_TEXT_SIZE;
@@ -333,12 +413,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     return [];
   };
 
-  const getBackgroundImages = () => {
-    if (config?.background_mode === "black") {
-      return [];
-    }
-    return normalizeStringList(config?.background_images);
-  };
+  const getBackgroundImages = () => getDerivedConfig().backgroundImages;
 
   const getBackgroundCarouselInterval = () => {
     const seconds = Number(config?.background_carousel_interval);
@@ -349,20 +424,42 @@ if (!window.__screensaverOverlayComponentInstalled) {
     );
   };
 
+  const preloadBackgroundImage = (url) => {
+    if (!url || preloadedBackgroundImages.has(url)) {
+      return;
+    }
+    preloadedBackgroundImages.add(url);
+    const image = new Image();
+    image.src = url;
+  };
+
+  const preloadNextBackgroundImage = (images) => {
+    if (images.length <= 1) {
+      return;
+    }
+    preloadBackgroundImage(images[(backgroundIndex + 1) % images.length]);
+  };
+
+  const backgroundSignature = () =>
+    `${getBackgroundCarouselInterval()}|${getBackgroundImages().join("\n")}`;
+
   const setBackgroundImage = () => {
     if (!content) {
       return;
     }
 
-    const layer = content.querySelector(".screensaver-background-image");
-    if (!layer) {
+    const layers = Array.from(content.querySelectorAll(".screensaver-background-image"));
+    if (!layers.length) {
       content.classList.remove("has-background");
       return;
     }
 
     const images = getBackgroundImages();
     if (!images.length) {
-      layer.style.backgroundImage = "";
+      layers.forEach((layer) => {
+        layer.style.backgroundImage = "";
+        layer.classList.remove("is-active");
+      });
       content.classList.remove("has-background");
       return;
     }
@@ -372,8 +469,19 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
     const url = images[backgroundIndex];
     const cssUrl = url.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    layer.style.backgroundImage = `url("${cssUrl}")`;
+    const nextLayerIndex = layers.length > 1 ? (activeBackgroundLayer + 1) % layers.length : 0;
+    const nextLayer = layers[nextLayerIndex];
+
+    nextLayer.style.backgroundImage = `url("${cssUrl}")`;
+    nextLayer.classList.add("is-active");
+    layers.forEach((layer, index) => {
+      if (index !== nextLayerIndex) {
+        layer.classList.remove("is-active");
+      }
+    });
+    activeBackgroundLayer = nextLayerIndex;
     content.classList.add("has-background");
+    preloadNextBackgroundImage(images);
   };
 
   const stopBackgroundCarousel = (clearBackground = false) => {
@@ -382,19 +490,32 @@ if (!window.__screensaverOverlayComponentInstalled) {
       backgroundTimer = undefined;
     }
     backgroundIndex = 0;
+    activeBackgroundLayer = 0;
+    activeBackgroundSignature = "";
+    activeBackgroundDomVersion = -1;
 
     if (!clearBackground || !content) {
       return;
     }
-    const layer = content.querySelector(".screensaver-background-image");
-    if (layer) {
+    const layers = content.querySelectorAll(".screensaver-background-image");
+    layers.forEach((layer) => {
       layer.style.backgroundImage = "";
-    }
+      layer.classList.remove("is-active");
+    });
     content.classList.remove("has-background");
   };
 
-  const startBackgroundCarousel = () => {
+  const startBackgroundCarousel = (force = false) => {
     if (!isVisible) {
+      return;
+    }
+
+    const signature = backgroundSignature();
+    if (
+      !force &&
+      signature === activeBackgroundSignature &&
+      backgroundDomVersion === activeBackgroundDomVersion
+    ) {
       return;
     }
 
@@ -402,9 +523,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
       window.clearInterval(backgroundTimer);
       backgroundTimer = undefined;
     }
-
     backgroundIndex = 0;
     setBackgroundImage();
+    activeBackgroundSignature = signature;
+    activeBackgroundDomVersion = backgroundDomVersion;
 
     const images = getBackgroundImages();
     if (images.length <= 1) {
@@ -424,19 +546,19 @@ if (!window.__screensaverOverlayComponentInstalled) {
   };
 
   const updateBurnInPadding = () => {
-    const top =
+    const y =
       Math.floor(Math.random() * (BURN_IN_PADDING_MAX / BURN_IN_PADDING_STEP + 1)) *
-      BURN_IN_PADDING_STEP;
-    const bottom = BURN_IN_PADDING_TOTAL - top;
-    const left =
+        BURN_IN_PADDING_STEP -
+      BURN_IN_PADDING_MAX / 2;
+    const x =
       Math.floor(Math.random() * (BURN_IN_PADDING_MAX / BURN_IN_PADDING_STEP + 1)) *
-      BURN_IN_PADDING_STEP;
+        BURN_IN_PADDING_STEP -
+      BURN_IN_PADDING_MAX / 2;
+    const left = BURN_IN_PADDING_MAX / 2 + x;
     const right = BURN_IN_PADDING_TOTAL - left;
 
-    overlay?.style.setProperty(
-      "--screensaver-burn-in-padding",
-      `${top}px ${right}px ${bottom}px ${left}px`
-    );
+    overlay?.style.setProperty("--screensaver-burn-in-x", `${x}px`);
+    overlay?.style.setProperty("--screensaver-burn-in-y", `${y}px`);
     overlay?.style.setProperty("--screensaver-burn-in-left", `${left}px`);
     overlay?.style.setProperty("--screensaver-burn-in-right", `${right}px`);
   };
@@ -602,19 +724,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
   };
 
   const normalizeStatusIconEntities = () => {
-    const rawEntities = [
-      ...(config?.status_icon_entities || []),
-      ...(config?.entity_icon || []),
-    ];
-
-    return rawEntities
-      .map((item) => {
-        if (typeof item === "string") {
-          return { entity: item, icon: undefined };
-        }
-        return { entity: item?.entity, icon: item?.icon };
-      })
-      .filter((item) => item.entity);
+    return getDerivedConfig().statusIconEntities;
   };
 
   const getStatusIcon = (entityId, state, customIcon) => {
@@ -770,7 +880,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       forecastUnsub = await hass.connection.subscribeMessage(
         (event) => {
           hourlyForecast = event?.forecast || [];
-          scheduleStateRender(false);
+          updateForecast(hass);
         },
         {
           type: "weather/subscribe_forecast",
@@ -790,6 +900,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       forecastUnsub = undefined;
     }
     hourlyForecast = [];
+    forecastTimeCache.clear();
   };
 
   const renderValues = (hass) =>
@@ -872,7 +983,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
 
     return `
-      <div class="forecast">
+      <div class="forecast" style="--screensaver-hourly-forecast-background-opacity:${getHourlyForecastBackgroundOpacity()};">
         <div class="gradient-bar"></div>
         <div class="timeline">
           ${hourlyForecast
@@ -908,12 +1019,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
                       : `<div class="condition"></div>`
                   }
                   <div class="details">
-                    <div class="hour">${html(
-                      new Date(forecast.datetime).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    )}</div>
+                    <div class="hour">${html(formatForecastTime(forecast.datetime))}</div>
                     <div class="temperature ${temperatureClass}">${html(
                       forecast.temperature
                     )}${html(temperatureUnit)}</div>
@@ -966,10 +1072,26 @@ if (!window.__screensaverOverlayComponentInstalled) {
   c0.67,0,1.65,0.17,2.54,0.99"
           />
         </g>
-        <text x="0.1313" y="290.461" class="temperature-text">${html(externalValue)}°</text>
-        <text x="660.559" y="290.461" class="temperature-text">${html(internalValue)}°</text>
+        <text x="0.1313" y="290.461" class="temperature-text external-temperature-text">${html(externalValue)}°</text>
+        <text x="660.559" y="290.461" class="temperature-text internal-temperature-text">${html(internalValue)}°</text>
       </svg>
     `;
+  };
+
+  const getTemperatureValues = (hass) => {
+    const weatherState = hass.states[getWeatherEntity()];
+    const externalState = config.external_temperature
+      ? hass.states[config.external_temperature]
+      : null;
+    const internalState = config.internal_temperature
+      ? hass.states[config.internal_temperature]
+      : null;
+
+    return {
+      externalTemperature:
+        externalState?.state ?? weatherState?.attributes?.temperature ?? "",
+      internalState,
+    };
   };
 
   const shouldAlternateInfo = () =>
@@ -997,22 +1119,113 @@ if (!window.__screensaverOverlayComponentInstalled) {
     infoElement.innerHTML = renderInfoContent(hass);
   };
 
-  const getWatchedEntities = () => {
-    const entities = new Set(
-      [
-        getWeatherEntity(),
-        config?.weather_description_entity,
-        config?.internal_temperature,
-        config?.external_temperature,
-        config?.rain_sensor,
-        "sun.sun",
-        ...getValueEntities(),
-        ...normalizeStatusIconEntities().map((item) => item.entity),
-        ...getCalendars(),
-      ].filter(Boolean)
-    );
+  const updateStatusIcons = (hass) => {
+    const statusElement = content?.querySelector(".status-icons");
+    if (!hass || !config || !statusElement || !isBlockVisible("show_status_icons")) {
+      return;
+    }
+    statusElement.innerHTML = renderStatusIcons(hass);
+  };
 
-    return entities;
+  const updateWeatherDescription = (hass) => {
+    const weatherDescriptionElement = content?.querySelector(".weather-description");
+    if (!hass || !config || !weatherDescriptionElement) {
+      return;
+    }
+    weatherDescriptionElement.innerHTML = renderWeatherDescription(hass);
+  };
+
+  const updateWeatherIcon = (hass) => {
+    const weatherIconElement = content?.querySelector(".weather-icon");
+    if (!hass || !config || !weatherIconElement || !isBlockVisible("show_weather_icon")) {
+      return;
+    }
+    const weatherState = hass.states[getWeatherEntity()];
+    const weatherIcon = getWeatherIcon(hass, weatherState?.state);
+    weatherIconElement.innerHTML = weatherIcon
+      ? `<img src="${ASSET_BASE}/weather_icons/now_icon/${html(weatherIcon)}.svg" />`
+      : "";
+  };
+
+  const updateTemperatures = (hass) => {
+    const temperaturesElement = content?.querySelector(".temperatures");
+    if (!hass || !config || !temperaturesElement || !isBlockVisible("show_temperatures")) {
+      return;
+    }
+
+    const { externalTemperature, internalState } = getTemperatureValues(hass);
+    const externalValue = formatTemperature(externalTemperature);
+
+    if (!internalState) {
+      const externalElement = temperaturesElement.querySelector(".ext-temp");
+      if (externalElement) {
+        externalElement.textContent = `${externalValue}°`;
+      } else {
+        temperaturesElement.innerHTML = renderTemperatures(externalTemperature, internalState);
+      }
+      return;
+    }
+
+    const internalValue = formatTemperature(internalState.state);
+    const svg = temperaturesElement.querySelector(".temperature-svg");
+    if (!svg) {
+      temperaturesElement.innerHTML = renderTemperatures(externalTemperature, internalState);
+      return;
+    }
+
+    svg.setAttribute(
+      "aria-label",
+      `${externalValue} degrees external, ${internalValue} degrees internal`
+    );
+    const externalText = svg.querySelector(".external-temperature-text");
+    const internalText = svg.querySelector(".internal-temperature-text");
+    if (externalText) {
+      externalText.textContent = `${externalValue}°`;
+    }
+    if (internalText) {
+      internalText.textContent = `${internalValue}°`;
+    }
+  };
+
+  const updateForecast = (hass = getHass()) => {
+    const screen = content?.querySelector(".screen");
+    if (!hass || !config || !screen) {
+      return;
+    }
+
+    const existing = screen.querySelector(".forecast");
+    const forecastHtml = renderForecastTimeline(hass).trim();
+    if (!forecastHtml) {
+      existing?.remove();
+      return;
+    }
+    if (existing) {
+      existing.outerHTML = forecastHtml;
+      return;
+    }
+    screen.insertAdjacentHTML("beforeend", forecastHtml);
+  };
+
+  const updateVisibleContent = async (refreshCalendarEvents = false) => {
+    const hass = getHass();
+    if (!hass || !config || !content) {
+      return;
+    }
+
+    if (refreshCalendarEvents) {
+      await fetchCalendarEvents();
+    }
+    updateStatusIcons(hass);
+    updateWeatherDescription(hass);
+    updateWeatherIcon(hass);
+    updateTemperatures(hass);
+    updateInfo();
+    updateForecast(hass);
+    updateClock();
+  };
+
+  const getWatchedEntities = () => {
+    return getDerivedConfig().watchedEntities;
   };
 
   const getClockParts = () => {
@@ -1027,6 +1240,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     return {
       time: formatTime(now),
       date: formatDate(now, language).replaceAll("/", " : "),
+      dateKey: `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`,
       dateParts: [dayName, ":", day, ":", month, ":", year],
     };
   };
@@ -1036,13 +1250,18 @@ if (!window.__screensaverOverlayComponentInstalled) {
       return;
     }
 
-    const { time, date, dateParts } = getClockParts();
+    const { time, date, dateKey, dateParts } = getClockParts();
     const timeElement = content.querySelector(".time-value, .fallback-time");
     const dateElement = content.querySelector(".date, .fallback-date");
 
     if (timeElement) {
       timeElement.textContent = time;
     }
+    if (dateKey === lastClockDateKey) {
+      return;
+    }
+    lastClockDateKey = dateKey;
+
     if (dateElement?.classList.contains("date")) {
       dateElement.innerHTML = dateParts.map((part) => `<div>${html(part)}</div>`).join("");
     } else if (dateElement) {
@@ -1062,10 +1281,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
       }
 
       if (refreshCalendarEvents) {
-        await fetchCalendarEvents();
+        await updateVisibleContent(true);
+        return;
       }
-      render();
-      updateClock();
+      await updateVisibleContent(false);
     }, 250);
   };
 
@@ -1125,10 +1344,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
 
     const hass = getHass();
-    const { time, date, dateParts } = getClockParts();
+    const { time, date, dateKey, dateParts } = getClockParts();
 
     if (!hass || !config) {
       content.innerHTML = `
+        <div class="screensaver-background-image"></div>
         <div class="screensaver-background-image"></div>
         <div class="screensaver-background-scrim"></div>
         <div class="fallback">
@@ -1136,22 +1356,18 @@ if (!window.__screensaverOverlayComponentInstalled) {
           <div class="fallback-date">${html(date)}</div>
         </div>
       `;
+      backgroundDomVersion += 1;
+      lastClockDateKey = dateKey;
       setBackgroundImage();
       return;
     }
 
     const weatherState = hass.states[getWeatherEntity()];
     const weatherIcon = getWeatherIcon(hass, weatherState?.state);
-    const externalState = config.external_temperature
-      ? hass.states[config.external_temperature]
-      : null;
-    const internalState = config.internal_temperature
-      ? hass.states[config.internal_temperature]
-      : null;
-    const externalTemperature =
-      externalState?.state ?? weatherState?.attributes?.temperature ?? "";
+    const { externalTemperature, internalState } = getTemperatureValues(hass);
 
     content.innerHTML = `
+      <div class="screensaver-background-image"></div>
       <div class="screensaver-background-image"></div>
       <div class="screensaver-background-scrim"></div>
       <div class="screen">
@@ -1203,6 +1419,8 @@ if (!window.__screensaverOverlayComponentInstalled) {
         ${renderForecastTimeline(hass)}
           </div>
     `;
+    backgroundDomVersion += 1;
+    lastClockDateKey = dateKey;
     setBackgroundImage();
   };
 
@@ -1228,7 +1446,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     if (isBlockVisible("show_hourly_forecast")) {
       await subscribeHourlyForecast();
     }
-    render();
+    await updateVisibleContent(false);
     startBackgroundCarousel();
     updateClock();
     await startStateSubscription();
@@ -1239,8 +1457,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     if (eventTimer === undefined && isBlockVisible("show_info")) {
       eventTimer = window.setInterval(async () => {
         await fetchCalendarEvents();
-        render();
-        updateClock();
+        await updateVisibleContent(false);
       }, 5 * 60 * 1000);
     }
     if (infoTimer === undefined && isBlockVisible("show_info") && shouldAlternateInfo()) {
@@ -1251,15 +1468,23 @@ if (!window.__screensaverOverlayComponentInstalled) {
     }
   };
 
-  const applyOverlayVisibleStyles = () => {
+  const applyOverlayVisibleStyles = ({ immediate = false } = {}) => {
     if (!overlay) {
       return;
     }
     stopInputShield();
+    if (immediate) {
+      overlay.classList.add("resume-immediate");
+    }
     overlay.style.opacity = "1";
     overlay.style.visibility = "visible";
     overlay.style.pointerEvents = "auto";
     overlay.setAttribute("aria-hidden", "false");
+    if (immediate) {
+      window.requestAnimationFrame(() => {
+        overlay?.classList.remove("resume-immediate");
+      });
+    }
   };
 
   const applyOverlayHiddenStyles = () => {
@@ -1283,7 +1508,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       stopIdleTimer();
       isVisible = true;
       setStoredOverlayActive(true);
-      applyOverlayVisibleStyles();
+      applyOverlayVisibleStyles({ immediate: true });
       startBurnInMovement();
       render();
       startBackgroundCarousel();
@@ -1299,7 +1524,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     isVisible = true;
     const showVersion = ++overlayStateVersion;
     setStoredOverlayActive(true);
-    applyOverlayVisibleStyles();
+    applyOverlayVisibleStyles({ immediate: true });
     startBurnInMovement();
     render();
     startBackgroundCarousel();
@@ -1317,7 +1542,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
       if (!config?.entry_id) {
         config = (await getConfig()) || config;
       }
-      applyOverlayVisibleStyles();
+      applyOverlayVisibleStyles({ immediate: true });
       render();
       startBackgroundCarousel();
       updateClock();
@@ -1613,6 +1838,9 @@ if (!window.__screensaverOverlayComponentInstalled) {
           user-select: none;
           font-family: 'bw_font', var(--primary-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
         }
+        #${OVERLAY_ID}.resume-immediate {
+          transition: none;
+        }
         #${OVERLAY_ID} .screensaver-overlay-content,
         #${OVERLAY_ID} .screen {
           width: 100%;
@@ -1643,7 +1871,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           opacity: 0;
           transition: opacity 0.8s ease;
         }
-        #${OVERLAY_ID} .screensaver-overlay-content.has-background .screensaver-background-image,
+        #${OVERLAY_ID} .screensaver-overlay-content.has-background .screensaver-background-image.is-active,
         #${OVERLAY_ID} .screensaver-overlay-content.has-background .screensaver-background-scrim {
           opacity: 1;
         }
@@ -1659,8 +1887,13 @@ if (!window.__screensaverOverlayComponentInstalled) {
             "tline tline tline tline tline";
           grid-template-columns: 7vw auto auto auto 1vw;
           grid-template-rows: auto auto 1fr auto;
-          padding: var(--screensaver-burn-in-padding, 30px);
+          padding: 30px;
           background: transparent;
+          transform: translate(
+            var(--screensaver-burn-in-x, 0px),
+            var(--screensaver-burn-in-y, 0px)
+          );
+          will-change: transform;
         }
         #${OVERLAY_ID} .status-icons {
           grid-area: icon;
@@ -1839,7 +2072,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
           content: "";
           position: absolute;
           inset: 0 calc(var(--screensaver-burn-in-right, 30px) * -1) -8px calc(var(--screensaver-burn-in-left, 30px) * -1);
-          background: rgba(0, 0, 0, 0.7);
+          background: rgba(0, 0, 0, var(--screensaver-hourly-forecast-background-opacity, 0.7));
           z-index: -1;
         }
         #${OVERLAY_ID} .gradient-bar {

@@ -34,6 +34,7 @@ OVERRIDE_KEYS = {
     "weather_icon_size",
     "weather_description_entity",
     "weather_description_text_size",
+    "hourly_forecast_background_opacity",
     "internal_temperature",
     "external_temperature",
     "rain_sensor",
@@ -181,6 +182,17 @@ def _normalize_positive_number(value: Any) -> int | float | None:
 
 
 @callback
+def _normalize_percentage(value: Any) -> int | float | None:
+    """Normalize a percentage between 0 and 100."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    number = min(max(number, 0), 100)
+    return int(number) if number.is_integer() else number
+
+
+@callback
 def _clean_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only supported override keys and drop empty values."""
     cleaned = {}
@@ -206,6 +218,11 @@ def _clean_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
             continue
         if key == "background_carousel_interval":
             number = _normalize_positive_number(value)
+            if number is not None:
+                cleaned[key] = number
+            continue
+        if key == "hourly_forecast_background_opacity":
+            number = _normalize_percentage(value)
             if number is not None:
                 cleaned[key] = number
             continue

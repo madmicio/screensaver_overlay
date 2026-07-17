@@ -16,6 +16,7 @@ from .const import (
     CONF_CALENDARS,
     CONF_ALLOWED_DASHBOARD_PATHS,
     CONF_EXTERNAL_TEMPERATURE,
+    CONF_HOURLY_FORECAST_BACKGROUND_OPACITY,
     CONF_INFO_ITEMS_LIMIT,
     CONF_INFO_TEXT_SIZE,
     CONF_INTERNAL_TEMPERATURE,
@@ -39,6 +40,7 @@ from .const import (
     DEFAULT_LIMIT_TO_DASHBOARDS,
     DEFAULT_OVERLAY_IDLE_TIMEOUT,
     DEFAULT_BACKGROUND_CAROUSEL_INTERVAL,
+    DEFAULT_HOURLY_FORECAST_BACKGROUND_OPACITY,
     DEFAULT_SHOW_BLOCK,
     DEFAULT_WEATHER_DESCRIPTION_TEXT_SIZE,
     DEFAULT_WEATHER_ICON_SIZE,
@@ -175,6 +177,21 @@ def _schema(hass, defaults: dict[str, Any] | None = None) -> vol.Schema:
                     step=0.1,
                     mode=selector.NumberSelectorMode.BOX,
                     unit_of_measurement="vh",
+                )
+            ),
+            vol.Optional(
+                CONF_HOURLY_FORECAST_BACKGROUND_OPACITY,
+                default=defaults.get(
+                    CONF_HOURLY_FORECAST_BACKGROUND_OPACITY,
+                    DEFAULT_HOURLY_FORECAST_BACKGROUND_OPACITY,
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=100,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="%",
                 )
             ),
             optional_entity(CONF_INTERNAL_TEMPERATURE): selector.EntitySelector(
