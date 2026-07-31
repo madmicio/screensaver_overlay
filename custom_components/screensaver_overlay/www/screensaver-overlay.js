@@ -1001,18 +1001,26 @@ if (!window.__screensaverOverlayComponentInstalled) {
               const iconUrl = `${ASSET_BASE}/weather_icons/${html(icon)}.svg`;
               const temperature = Number(forecast.temperature);
               const temperatureClass =
-                temperatureUnit === "°C"
-                  ? temperature < 10
+                Number.isFinite(temperature) && temperatureUnit === "°C"
+                  ? temperature < 5
                     ? "cold"
-                    : temperature > 25
-                      ? "hot"
-                      : ""
-                  : temperatureUnit === "°F"
-                    ? temperature < 50
+                    : temperature < 13
+                      ? "cool"
+                      : temperature < 25
+                        ? ""
+                        : temperature <= 30
+                          ? "warm"
+                          : "hot"
+                  : Number.isFinite(temperature) && temperatureUnit === "°F"
+                    ? temperature < 41
                       ? "cold"
-                      : temperature > 77
-                        ? "hot"
-                        : ""
+                      : temperature < 55
+                        ? "cool"
+                        : temperature < 77
+                          ? ""
+                          : temperature <= 86
+                            ? "warm"
+                            : "hot"
                     : "";
 
               return `
@@ -2298,10 +2306,16 @@ if (!window.__screensaverOverlayComponentInstalled) {
           font-weight: bold;
         }
         #${OVERLAY_ID} .details .temperature {
-          color: #ff5722;
+          color: #e0e0e0;
         }
         #${OVERLAY_ID} .details .temperature.cold {
-          color: #2196f3;
+          color: #1976d2;
+        }
+        #${OVERLAY_ID} .details .temperature.cool {
+          color: #64b5f6;
+        }
+        #${OVERLAY_ID} .details .temperature.warm {
+          color: #ff9800;
         }
         #${OVERLAY_ID} .details .temperature.hot {
           color: #f44336;

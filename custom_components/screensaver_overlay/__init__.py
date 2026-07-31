@@ -26,11 +26,15 @@ except ImportError:
     StaticPathConfig = None
 
 from .const import (
+    ADAPTIVE_BRIGHTNESS_FILTER_NEW_WEIGHT,
+    ADAPTIVE_BRIGHTNESS_FILTER_OLD_WEIGHT,
+    ADAPTIVE_BRIGHTNESS_UPDATE_THRESHOLD,
     BRIGHTNESS_MODE_COMPANION,
     BRIGHTNESS_MODE_DISABLED,
     BRIGHTNESS_MODE_FULLY,
     BRIGHTNESS_MODES,
     BRIGHTNESS_STRATEGIES,
+    BRIGHTNESS_STRATEGY_ADAPTIVE,
     BRIGHTNESS_STRATEGY_FIXED,
     BRIGHTNESS_STRATEGY_LOGARITHMIC,
     BRIGHTNESS_STRATEGY_PERCENTAGE,
@@ -43,6 +47,12 @@ from .const import (
     CONF_BRIGHTNESS_SCREEN_VALUE,
     CONF_BRIGHTNESS_SCREENSAVER_VALUE,
     CONF_BRIGHTNESS_STRATEGY,
+    CONF_ADAPTIVE_AMBIENT_LIGHT_SENSOR,
+    CONF_ADAPTIVE_CALIBRATION_BRIGHTNESS,
+    CONF_ADAPTIVE_CALIBRATION_LUX,
+    CONF_ADAPTIVE_GAMMA,
+    CONF_ADAPTIVE_SCREENSAVER_OFFSET,
+    CONF_ADAPTIVE_UPDATE_INTERVAL,
     CONF_COMPANION_BRIGHTNESS_SENSOR,
     CONF_COMPANION_NOTIFY_SERVICE,
     CONF_FULLY_HOST,
@@ -59,6 +69,9 @@ from .const import (
     DEFAULT_BRIGHTNESS_SCREEN_VALUE,
     DEFAULT_BRIGHTNESS_SCREENSAVER_VALUE,
     DEFAULT_BRIGHTNESS_STRATEGY,
+    DEFAULT_ADAPTIVE_GAMMA,
+    DEFAULT_ADAPTIVE_SCREENSAVER_OFFSET,
+    DEFAULT_ADAPTIVE_UPDATE_INTERVAL,
     DEFAULT_FULLY_PORT,
     DEFAULT_FULLY_TIMEOUT,
     DEFAULT_FULLY_USE_HTTPS,
@@ -146,6 +159,9 @@ class ClientRuntimeState:
     brightness_reapply_unsub: CALLBACK_TYPE | None = None
     brightness_reapply_attempts: int = 0
     active_brightness_snapshot: BrightnessSnapshot | None = None
+    adaptive_unsub: CALLBACK_TYPE | None = None
+    adaptive_filtered_lux: float | None = None
+    adaptive_last_applied_value: float | None = None
 
 
 class ScreensaverOverlayRuntime:
@@ -286,6 +302,53 @@ class ScreensaverOverlayRuntime:
         """Return whether automatic brightness should be restored after overlay."""
         return bool(config.get(CONF_RESTORE_AUTO_BRIGHTNESS))
 
+    def _adaptive_ambient_light_sensor(self, config: dict) -> str | None:
+        """Return configured adaptive ambient light sensor."""
+        sensor = str(config.get(CONF_ADAPTIVE_AMBIENT_LIGHT_SENSOR) or "").strip()
+        return sensor or None
+
+    def _adaptive_screensaver_offset(self, config: dict) -> float:
+        """Return adaptive screensaver brightness offset."""
+        return self._clamp_brightness_value(
+            config.get(
+                CONF_ADAPTIVE_SCREENSAVER_OFFSET,
+                DEFAULT_ADAPTIVE_SCREENSAVER_OFFSET,
+            ),
+            DEFAULT_ADAPTIVE_SCREENSAVER_OFFSET,
+        )
+
+    def _adaptive_update_interval(self, config: dict) -> int:
+        """Return adaptive brightness update interval in seconds."""
+        try:
+            value = int(
+                config.get(
+                    CONF_ADAPTIVE_UPDATE_INTERVAL,
+                    DEFAULT_ADAPTIVE_UPDATE_INTERVAL,
+                )
+            )
+        except (TypeError, ValueError):
+            value = DEFAULT_ADAPTIVE_UPDATE_INTERVAL
+        return max(value, 5)
+
+    def _adaptive_gamma(self, config: dict) -> float:
+        """Return adaptive brightness response gamma."""
+        try:
+            value = float(config.get(CONF_ADAPTIVE_GAMMA, DEFAULT_ADAPTIVE_GAMMA))
+        except (TypeError, ValueError):
+            value = DEFAULT_ADAPTIVE_GAMMA
+        return min(max(value, 0.1), 1)
+
+    def _adaptive_calibration_lux(self, config: dict) -> float | None:
+        """Return adaptive calibration lux."""
+        return self._positive_float(config.get(CONF_ADAPTIVE_CALIBRATION_LUX))
+
+    def _adaptive_calibration_brightness(self, config: dict) -> float | None:
+        """Return adaptive calibration screen brightness."""
+        value = self._positive_float(config.get(CONF_ADAPTIVE_CALIBRATION_BRIGHTNESS))
+        if value is None:
+            return None
+        return self._clamp_adaptive_brightness_value(value)
+
     def _fully_host(self, config: dict) -> str | None:
         """Return configured Fully Kiosk host."""
         host = str(config.get(CONF_FULLY_HOST) or "").strip().rstrip("/")
@@ -318,12 +381,73 @@ class ScreensaverOverlayRuntime:
         except (TypeError, ValueError):
             return 0
 
+    async def async_client_config_updated(
+        self, client_id: str | None, config: dict | None
+    ) -> None:
+        """Handle an updated browser client device config."""
+        state = self._state_for(client_id)
+        state.config = config
+        if config is None or not self._uses_adaptive_brightness(config):
+            self._cancel_adaptive_brightness_loop(state)
+            return
+
+        state.active_brightness_snapshot = None
+        self._cancel_overlay_brightness_reapply(state)
+        await self._async_set_auto_brightness(
+            config, self._brightness_mode(config), False
+        )
+        await self._async_apply_adaptive_brightness(client_id, state)
+        self._schedule_adaptive_brightness_loop(client_id, state)
+
+    async def async_client_removed(self, client_id: str | None) -> None:
+        """Cancel runtime state for a removed or disabled client."""
+        state = self._state_for(client_id)
+        state.active = False
+        self._cancel_screen_off(state)
+        self._remove_motion_listener(state)
+        self._cancel_overlay_brightness_reapply(state)
+        self._cancel_adaptive_brightness_loop(state)
+        self._async_notify_state_listeners()
+
+    async def async_calibrate_adaptive_brightness(self, config: dict) -> dict:
+        """Read current lux and brightness for adaptive brightness calibration."""
+        mode = self._brightness_mode(config)
+        if mode == BRIGHTNESS_MODE_DISABLED:
+            raise HomeAssistantError("Brightness control is disabled")
+
+        lux = await self._async_read_ambient_lux(config)
+        if lux is None or lux <= 0:
+            raise HomeAssistantError("Unable to read a valid ambient light value")
+
+        brightness = await self._async_read_current_brightness(config, mode)
+        if brightness is None:
+            raise HomeAssistantError("Unable to read current screen brightness")
+
+        return {
+            "lux": lux,
+            "brightness": self._clamp_adaptive_brightness_value(brightness),
+        }
+
     async def async_overlay_shown(
         self, client_id: str | None = None, config: dict | None = None
     ) -> None:
         """Handle overlay shown in frontend."""
         state = self._state_for(client_id)
         state.config = config or self.config
+        if self._uses_adaptive_brightness(state.config):
+            state.active = True
+            state.active_brightness_snapshot = None
+            self._cancel_overlay_brightness_reapply(state)
+            await self._async_set_auto_brightness(
+                state.config, self._brightness_mode(state.config), False
+            )
+            await self._async_apply_adaptive_brightness(client_id, state)
+            self._schedule_adaptive_brightness_loop(client_id, state)
+            self._async_notify_state_listeners()
+            self._ensure_motion_listener(client_id, state)
+            self._schedule_screen_off(client_id, state)
+            return
+
         if not state.active:
             self._cancel_overlay_brightness_reapply(state)
             await self._async_apply_overlay_brightness(state)
@@ -349,6 +473,11 @@ class ScreensaverOverlayRuntime:
         self._remove_motion_listener(state)
         self._cancel_overlay_brightness_reapply(state)
         self._async_notify_state_listeners()
+        if self._uses_adaptive_brightness(state.config):
+            await self._async_apply_adaptive_brightness(client_id, state, force=True)
+            self._schedule_adaptive_brightness_loop(client_id, state)
+            return
+
         await self._async_restore_screen_brightness(state)
 
     async def async_unload(self) -> None:
@@ -358,6 +487,7 @@ class ScreensaverOverlayRuntime:
             self._cancel_screen_off(state)
             self._remove_motion_listener(state)
             self._cancel_overlay_brightness_reapply(state)
+            self._cancel_adaptive_brightness_loop(state)
         self._async_notify_state_listeners()
 
     @callback
@@ -547,6 +677,9 @@ class ScreensaverOverlayRuntime:
     ) -> BrightnessSnapshot | None:
         """Build brightness values for the current overlay cycle."""
         strategy = self._brightness_strategy(config)
+        if strategy == BRIGHTNESS_STRATEGY_ADAPTIVE:
+            return None
+
         if strategy == BRIGHTNESS_STRATEGY_FIXED:
             return BrightnessSnapshot(
                 mode=mode,
@@ -594,6 +727,130 @@ class ScreensaverOverlayRuntime:
         target = max(target, self._brightness_logarithmic_min_value(config))
         return self._clamp_brightness_value(target)
 
+    @callback
+    def _uses_adaptive_brightness(self, config: dict | None) -> bool:
+        """Return whether config should use the adaptive brightness loop."""
+        if not config:
+            return False
+        return (
+            self._brightness_mode(config) != BRIGHTNESS_MODE_DISABLED
+            and self._brightness_strategy(config) == BRIGHTNESS_STRATEGY_ADAPTIVE
+        )
+
+    @callback
+    def _calculate_adaptive_dashboard_brightness(
+        self, config: dict, lux: float
+    ) -> float | None:
+        """Calculate dashboard brightness from calibrated ambient lux."""
+        calibration_lux = self._adaptive_calibration_lux(config)
+        calibration_brightness = self._adaptive_calibration_brightness(config)
+        if calibration_lux is None or calibration_brightness is None:
+            return None
+
+        lux = max(float(lux), 0)
+        target = calibration_brightness * (
+            lux / calibration_lux
+        ) ** self._adaptive_gamma(config)
+        return self._clamp_adaptive_brightness_value(target)
+
+    @callback
+    def _calculate_adaptive_target_brightness(
+        self, config: dict, lux: float, overlay_active: bool
+    ) -> float | None:
+        """Calculate adaptive brightness for dashboard or overlay state."""
+        dashboard = self._calculate_adaptive_dashboard_brightness(config, lux)
+        if dashboard is None:
+            return None
+        if overlay_active:
+            dashboard -= self._adaptive_screensaver_offset(config)
+        return self._clamp_adaptive_brightness_value(dashboard)
+
+    async def _async_apply_adaptive_brightness(
+        self,
+        client_id: str | None,
+        state: ClientRuntimeState,
+        force: bool = False,
+    ) -> None:
+        """Read ambient light, calculate adaptive brightness, and apply it."""
+        config = state.config or self.config
+        if not self._uses_adaptive_brightness(config):
+            self._cancel_adaptive_brightness_loop(state)
+            return
+
+        lux = await self._async_read_ambient_lux(config)
+        if lux is None:
+            _LOGGER.debug("Unable to read ambient light for adaptive brightness")
+            return
+
+        if state.adaptive_filtered_lux is None:
+            state.adaptive_filtered_lux = lux
+        else:
+            state.adaptive_filtered_lux = (
+                state.adaptive_filtered_lux * ADAPTIVE_BRIGHTNESS_FILTER_OLD_WEIGHT
+                + lux * ADAPTIVE_BRIGHTNESS_FILTER_NEW_WEIGHT
+            )
+
+        target = self._calculate_adaptive_target_brightness(
+            config, state.adaptive_filtered_lux, state.active
+        )
+        if target is None:
+            _LOGGER.debug(
+                "Adaptive brightness is not calibrated for client %s",
+                client_id or "default",
+            )
+            return
+
+        if (
+            not force
+            and state.adaptive_last_applied_value is not None
+            and abs(target - state.adaptive_last_applied_value)
+            < ADAPTIVE_BRIGHTNESS_UPDATE_THRESHOLD
+        ):
+            return
+
+        mode = self._brightness_mode(config)
+        await self._async_set_brightness_value(config, mode, target)
+        state.adaptive_last_applied_value = target
+
+    @callback
+    def _schedule_adaptive_brightness_loop(
+        self, client_id: str | None, state: ClientRuntimeState
+    ) -> None:
+        """Schedule the next adaptive brightness update."""
+        if not self._uses_adaptive_brightness(state.config):
+            self._cancel_adaptive_brightness_loop(state)
+            return
+        if state.adaptive_unsub is not None:
+            return
+
+        state.adaptive_unsub = async_call_later(
+            self.hass,
+            self._adaptive_update_interval(state.config or self.config),
+            partial(self._async_adaptive_brightness_tick, client_id),
+        )
+
+    async def _async_adaptive_brightness_tick(
+        self, client_id: str | None, now
+    ) -> None:
+        """Run one adaptive brightness loop tick and reschedule."""
+        state = self._state_for(client_id)
+        state.adaptive_unsub = None
+        if not self._uses_adaptive_brightness(state.config):
+            self._cancel_adaptive_brightness_loop(state)
+            return
+
+        await self._async_apply_adaptive_brightness(client_id, state)
+        self._schedule_adaptive_brightness_loop(client_id, state)
+
+    @callback
+    def _cancel_adaptive_brightness_loop(self, state: ClientRuntimeState) -> None:
+        """Cancel adaptive brightness loop and reset transient filter state."""
+        if state.adaptive_unsub is not None:
+            state.adaptive_unsub()
+            state.adaptive_unsub = None
+        state.adaptive_filtered_lux = None
+        state.adaptive_last_applied_value = None
+
     async def _async_read_current_brightness(
         self, config: dict, mode: str
     ) -> float | None:
@@ -609,6 +866,19 @@ class ScreensaverOverlayRuntime:
 
         return None
 
+    async def _async_read_ambient_lux(self, config: dict) -> float | None:
+        """Read ambient light from an HA sensor or Fully Kiosk deviceInfo."""
+        source = self._adaptive_ambient_light_sensor(config)
+        if source:
+            value = self._read_numeric_state(source)
+            if value is not None:
+                return value
+
+        if self._brightness_mode(config) == BRIGHTNESS_MODE_FULLY:
+            return await self._async_read_fully_ambient_lux(config)
+
+        return None
+
     @callback
     def _read_numeric_state(self, entity_id: str) -> float | None:
         """Read a numeric state value."""
@@ -621,6 +891,17 @@ class ScreensaverOverlayRuntime:
             return None
 
     @callback
+    def _positive_float(self, value) -> float | None:
+        """Return a positive finite float or None."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number <= 0 or not math.isfinite(number):
+            return None
+        return number
+
+    @callback
     def _clamp_brightness_value(
         self, value, fallback: float = DEFAULT_BRIGHTNESS_SCREENSAVER_VALUE
     ) -> float:
@@ -630,6 +911,13 @@ class ScreensaverOverlayRuntime:
         except (TypeError, ValueError):
             number = fallback
         return min(max(number, 0), 255)
+
+    @callback
+    def _clamp_adaptive_brightness_value(
+        self, value, fallback: float = DEFAULT_BRIGHTNESS_SCREENSAVER_VALUE
+    ) -> float:
+        """Clamp adaptive brightness values to the readable 1-255 range."""
+        return min(max(self._clamp_brightness_value(value, fallback), 1), 255)
 
     async def _async_set_brightness_value(
         self, config: dict, mode: str, value: float
@@ -652,7 +940,8 @@ class ScreensaverOverlayRuntime:
     ) -> None:
         """Set automatic brightness through the configured mode."""
         if mode == BRIGHTNESS_MODE_FULLY:
-            await self._async_set_fully_auto_brightness(config)
+            if enabled:
+                await self._async_set_fully_auto_brightness(config)
             return
 
         if mode == BRIGHTNESS_MODE_COMPANION:
@@ -670,11 +959,7 @@ class ScreensaverOverlayRuntime:
 
     async def _async_read_fully_brightness(self, config: dict) -> float | None:
         """Read current brightness through Fully Kiosk REST deviceInfo."""
-        data = await self._async_fully_request(
-            config,
-            {"cmd": "deviceInfo", "type": "json"},
-            expect_json=True,
-        )
+        data = await self._async_read_fully_device_info(config)
         if not isinstance(data, dict):
             return None
         value = data.get("screenBrightness")
@@ -683,6 +968,50 @@ class ScreensaverOverlayRuntime:
         brightness = self._clamp_brightness_value(value)
         _LOGGER.debug("Fully Kiosk reported screenBrightness=%s", brightness)
         return brightness
+
+    async def _async_read_fully_ambient_lux(self, config: dict) -> float | None:
+        """Read ambient light sensor lux through Fully Kiosk deviceInfo."""
+        data = await self._async_read_fully_device_info(config)
+        if not isinstance(data, dict):
+            return None
+        return self._extract_fully_ambient_lux(data)
+
+    async def _async_read_fully_device_info(self, config: dict):
+        """Read Fully Kiosk REST deviceInfo JSON."""
+        return await self._async_fully_request(
+            config,
+            {"cmd": "deviceInfo", "type": "json"},
+            expect_json=True,
+        )
+
+    @callback
+    def _extract_fully_ambient_lux(self, data: dict) -> float | None:
+        """Extract the preferred Android ambient light sensor value from Fully data."""
+        sensor_info = data.get("sensorInfo")
+        if not isinstance(sensor_info, list):
+            return None
+
+        candidates = []
+        for sensor in sensor_info:
+            if not isinstance(sensor, dict) or sensor.get("type") != 5:
+                continue
+            values = sensor.get("values")
+            if not isinstance(values, list) or not values:
+                continue
+            try:
+                value = float(values[0])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            name = str(sensor.get("name") or "").lower()
+            preferred = "ambient light sensor non-wakeup" in name
+            candidates.append((0 if preferred else 1, value))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
 
     async def _async_set_fully_brightness_value(
         self, config: dict, value: float
@@ -823,8 +1152,12 @@ class ScreensaverOverlayRuntime:
 
         self._cancel_screen_off(state)
         await self._async_set_screen_power(config, True)
-        await self._async_reapply_overlay_brightness(state)
-        self._schedule_overlay_brightness_reapply(state)
+        if self._uses_adaptive_brightness(config):
+            await self._async_apply_adaptive_brightness(client_id, state)
+            self._schedule_adaptive_brightness_loop(client_id, state)
+        else:
+            await self._async_reapply_overlay_brightness(state)
+            self._schedule_overlay_brightness_reapply(state)
         self.hass.bus.async_fire(
             f"{DOMAIN}_screen_wake",
             {

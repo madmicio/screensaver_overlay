@@ -37,6 +37,12 @@ const DEVICE_CONFIG_KEYS = [
   "brightness_screen_value",
   "brightness_screensaver_value",
   "restore_auto_brightness",
+  "adaptive_ambient_light_sensor",
+  "adaptive_screensaver_offset",
+  "adaptive_update_interval",
+  "adaptive_gamma",
+  "adaptive_calibration_lux",
+  "adaptive_calibration_brightness",
   "fully_host",
   "fully_port",
   "fully_password",
@@ -60,6 +66,23 @@ const PANEL_TRANSLATIONS = {
       "These settings apply only to the selected browser. When inherited, global images and interval are used.",
     behavior: "Behavior",
     binarySensor: "Create binary sensor for automations",
+    adaptiveAmbientLightSensor: "Ambient light sensor",
+    adaptiveAmbientLightSensorHelp:
+      "Set this entity only if you do not want to use the device sensor.",
+    adaptiveBrightness: "Adaptive ambient light",
+    adaptiveCalibrate: "Calibrate",
+    adaptiveCalibrationHelp:
+      "Set the tablet brightness manually, then calibrate to save the current lux and screen brightness.",
+    adaptiveCalibrationMissing: "Not calibrated yet.",
+    adaptiveCalibrationStatus:
+      "Calibration: {lux} lux at brightness {brightness}.",
+    adaptiveGamma: "Response gamma",
+    adaptiveGammaHelp:
+      "Default: 0.5. Lower values react less aggressively to lux changes.",
+    adaptiveOffset: "Screensaver brightness offset",
+    adaptiveOffsetHelp:
+      "Fixed value subtracted from calculated dashboard brightness while the screensaver is active.",
+    adaptiveUpdateInterval: "Adaptive update interval (seconds)",
     brightnessCompanionHelp:
       "Companion App requires Android, permission to modify system settings, and an updated brightness sensor every 15 seconds when using percentage reduction.",
     brightnessDashboardValue: "Dashboard brightness value",
@@ -204,6 +227,23 @@ const PANEL_TRANSLATIONS = {
       "Queste impostazioni valgono solo per il browser selezionato. In eredita usa immagini e intervallo globali.",
     behavior: "Comportamento",
     binarySensor: "Crea binary sensor per automazioni",
+    adaptiveAmbientLightSensor: "Sensore luce ambientale",
+    adaptiveAmbientLightSensorHelp:
+      "impostare questa entita solo se non si vuole utilizzare il sensore del device",
+    adaptiveBrightness: "Luce ambientale adattiva",
+    adaptiveCalibrate: "Calibra",
+    adaptiveCalibrationHelp:
+      "Imposta manualmente la luminosita del tablet, poi calibra per salvare lux e luminosita schermo correnti.",
+    adaptiveCalibrationMissing: "Non ancora calibrata.",
+    adaptiveCalibrationStatus:
+      "Calibrazione: {lux} lux a luminosita {brightness}.",
+    adaptiveGamma: "Gamma risposta",
+    adaptiveGammaHelp:
+      "Default: 0.5. Valori piu bassi reagiscono meno aggressivamente alle variazioni lux.",
+    adaptiveOffset: "Offset luminosita screensaver",
+    adaptiveOffsetHelp:
+      "Valore fisso sottratto alla luminosita dashboard calcolata mentre lo screensaver e attivo.",
+    adaptiveUpdateInterval: "Intervallo aggiornamento adattivo (secondi)",
     brightnessCompanionHelp:
       "App Companion richiede Android, permesso modifica impostazioni di sistema e sensore luminosita aggiornato ogni 15 secondi quando usi la riduzione percentuale.",
     brightnessDashboardValue: "Valore luminosita dashboard",
@@ -401,6 +441,7 @@ class ScreensaverOverlayPanel extends HTMLElement {
       { value: "percentage", label: this._t("brightnessPercentage") },
       { value: "logarithmic", label: this._t("brightnessLogarithmic") },
       { value: "fixed", label: this._t("brightnessFixed") },
+      { value: "adaptive", label: this._t("adaptiveBrightness") },
     ];
   }
 
@@ -1404,6 +1445,32 @@ class ScreensaverOverlayPanel extends HTMLElement {
     this._render();
   }
 
+  async _calibrateAdaptiveBrightness() {
+    if (!this._activeClientId || !this._draft) return;
+    const clientConfig = this._clientConfigForSave();
+    this._saving = true;
+    this._render();
+    try {
+      await this._sendMessage({
+        type: "screensaver_overlay/save_browser_client",
+        client_id: this._activeClientId,
+        client_config: clientConfig,
+      });
+      const result = await this._sendMessage({
+        type: "screensaver_overlay/calibrate_adaptive_brightness",
+        client_id: this._activeClientId,
+      });
+      this._browserConfig = result.browser_config;
+      this._makeDraft();
+      this._error = "";
+      window.__screensaverOverlayComponentRefreshConfig?.();
+    } catch (err) {
+      this._error = err?.message || String(err);
+    }
+    this._saving = false;
+    this._render();
+  }
+
   async _deleteClient() {
     if (!this._activeClientId) return;
     const clientId = this._activeClientId;
@@ -1785,6 +1852,12 @@ class ScreensaverOverlayPanel extends HTMLElement {
         }
         .entity-add-picker {
           min-height: 38px;
+        }
+        .adaptive-calibration {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          align-items: flex-start;
         }
         .dashboard-picker {
           margin-top: 14px;
@@ -2437,7 +2510,7 @@ class ScreensaverOverlayPanel extends HTMLElement {
         ${mode === "companion" ? this._renderCompanionBrightnessFields(overrides) : ""}
         ${mode === "fully" ? this._renderFullyBrightnessFields(overrides) : ""}
         ${
-          strategy === "fixed"
+          strategy === "fixed" || strategy === "adaptive"
             ? ""
             : `<label class="checkbox">
                 <input id="restore-auto-brightness" type="checkbox" ${
@@ -2465,7 +2538,7 @@ class ScreensaverOverlayPanel extends HTMLElement {
           <input id="brightness-screensaver-value" type="number" min="0" max="255" step="1" value="${this._html(
             overrides.brightness_screensaver_value ?? ""
           )}" placeholder="Esempio: 20" />
-          <span class="muted">${this._html(this._t("optionalDefault"))}</span>
+          <span class="muted">${this._html(this._t("adaptiveAmbientLightSensorHelp"))}</span>
         </label>
         <label>
           ${this._html(this._t("brightnessDashboardValue"))}
@@ -2474,6 +2547,55 @@ class ScreensaverOverlayPanel extends HTMLElement {
           )}" placeholder="Esempio: 180" />
           <span class="muted">${this._html(this._t("optionalDefault"))}</span>
         </label>
+      `;
+    }
+
+    if (strategy === "adaptive") {
+      const calibrationLux = overrides.adaptive_calibration_lux;
+      const calibrationBrightness = overrides.adaptive_calibration_brightness;
+      const calibrationText =
+        calibrationLux && calibrationBrightness
+          ? this._t("adaptiveCalibrationStatus")
+              .replace("{lux}", this._html(calibrationLux))
+              .replace("{brightness}", this._html(calibrationBrightness))
+          : this._t("adaptiveCalibrationMissing");
+      return `
+        <label>
+          ${this._html(this._t("adaptiveAmbientLightSensor"))}
+          ${this._renderEntityPicker(
+            "adaptive-ambient-light-sensor",
+            overrides.adaptive_ambient_light_sensor,
+            "sensor"
+          )}
+          <span class="muted">${this._html(this._t("optionalDefault"))}</span>
+        </label>
+        <label>
+          ${this._html(this._t("adaptiveOffset"))}
+          <input id="adaptive-screensaver-offset" type="number" min="0" max="255" step="1" value="${this._html(
+            overrides.adaptive_screensaver_offset ?? ""
+          )}" placeholder="Default se vuoto: 100" />
+          <span class="muted">${this._html(this._t("adaptiveOffsetHelp"))}</span>
+        </label>
+        <label>
+          ${this._html(this._t("adaptiveUpdateInterval"))}
+          <input id="adaptive-update-interval" type="number" min="5" max="300" step="1" value="${this._html(
+            overrides.adaptive_update_interval ?? ""
+          )}" placeholder="Default se vuoto: 15" />
+        </label>
+        <label>
+          ${this._html(this._t("adaptiveGamma"))}
+          <input id="adaptive-gamma" type="number" min="0.1" max="1" step="0.1" value="${this._html(
+            overrides.adaptive_gamma ?? ""
+          )}" placeholder="Default se vuoto: 0.5" />
+          <span class="muted">${this._html(this._t("adaptiveGammaHelp"))}</span>
+        </label>
+        <div class="adaptive-calibration">
+          <div class="muted">${this._html(calibrationText)}</div>
+          <div class="muted">${this._html(this._t("adaptiveCalibrationHelp"))}</div>
+          <button id="adaptive-calibrate" type="button" class="secondary" ${
+            this._saving ? "disabled" : ""
+          }>${this._html(this._t("adaptiveCalibrate"))}</button>
+        </div>
       `;
     }
 
@@ -2521,6 +2643,7 @@ class ScreensaverOverlayPanel extends HTMLElement {
       </label>
       ${
         strategy === "percentage"
+        || strategy === "adaptive"
           ? `<label>
               ${this._html(this._t("companionBrightnessSensor"))}
               ${this._renderEntityPicker(
@@ -2584,6 +2707,9 @@ class ScreensaverOverlayPanel extends HTMLElement {
     this.shadowRoot
       .querySelector("#save-client-bottom")
       ?.addEventListener("click", () => this._saveClient());
+    this.shadowRoot
+      .querySelector("#adaptive-calibrate")
+      ?.addEventListener("click", () => this._calibrateAdaptiveBrightness());
     this.shadowRoot
       .querySelector("#reset-overrides")
       ?.addEventListener("click", () => this._resetOverrides());
@@ -2907,6 +3033,21 @@ class ScreensaverOverlayPanel extends HTMLElement {
         "brightness_screensaver_value",
         this._numberOrEmpty(ev.target.value)
       )
+    );
+    bindValueChanged("#adaptive-ambient-light-sensor", (value) =>
+      this._setOverride("adaptive_ambient_light_sensor", value)
+    );
+    bindInput("#adaptive-screensaver-offset", (ev) =>
+      this._setOverride(
+        "adaptive_screensaver_offset",
+        this._numberOrEmpty(ev.target.value)
+      )
+    );
+    bindInput("#adaptive-update-interval", (ev) =>
+      this._setOverride("adaptive_update_interval", this._numberOrEmpty(ev.target.value))
+    );
+    bindInput("#adaptive-gamma", (ev) =>
+      this._setOverride("adaptive_gamma", this._numberOrEmpty(ev.target.value))
     );
     bindInput("#fully-host", (ev) =>
       this._setOverride("fully_host", ev.target.value.trim())

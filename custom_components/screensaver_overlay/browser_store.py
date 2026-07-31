@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -67,6 +68,12 @@ OVERRIDE_KEYS = {
     "brightness_screen_value",
     "brightness_screensaver_value",
     "restore_auto_brightness",
+    "adaptive_ambient_light_sensor",
+    "adaptive_screensaver_offset",
+    "adaptive_update_interval",
+    "adaptive_gamma",
+    "adaptive_calibration_lux",
+    "adaptive_calibration_brightness",
     "fully_host",
     "fully_port",
     "fully_password",
@@ -86,6 +93,12 @@ DEVICE_CONFIG_KEYS = {
     "brightness_screen_value",
     "brightness_screensaver_value",
     "restore_auto_brightness",
+    "adaptive_ambient_light_sensor",
+    "adaptive_screensaver_offset",
+    "adaptive_update_interval",
+    "adaptive_gamma",
+    "adaptive_calibration_lux",
+    "adaptive_calibration_brightness",
     "fully_host",
     "fully_port",
     "fully_password",
@@ -193,6 +206,30 @@ def _normalize_percentage(value: Any) -> int | float | None:
 
 
 @callback
+def _normalize_number(value: Any) -> int | float | None:
+    """Normalize a finite number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+@callback
+def _normalize_clamped_number(
+    value: Any, minimum: float, maximum: float
+) -> int | float | None:
+    """Normalize a finite number inside a range."""
+    number = _normalize_number(value)
+    if number is None:
+        return None
+    number = min(max(float(number), minimum), maximum)
+    return int(number) if number.is_integer() else number
+
+
+@callback
 def _clean_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only supported override keys and drop empty values."""
     cleaned = {}
@@ -223,6 +260,29 @@ def _clean_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
             continue
         if key == "hourly_forecast_background_opacity":
             number = _normalize_percentage(value)
+            if number is not None:
+                cleaned[key] = number
+            continue
+        if key in {
+            "adaptive_screensaver_offset",
+            "adaptive_calibration_brightness",
+        }:
+            number = _normalize_clamped_number(value, 0, 255)
+            if number is not None:
+                cleaned[key] = number
+            continue
+        if key == "adaptive_update_interval":
+            number = _normalize_positive_number(value)
+            if number is not None:
+                cleaned[key] = max(number, 5)
+            continue
+        if key == "adaptive_gamma":
+            number = _normalize_clamped_number(value, 0.1, 1)
+            if number is not None:
+                cleaned[key] = number
+            continue
+        if key == "adaptive_calibration_lux":
+            number = _normalize_positive_number(value)
             if number is not None:
                 cleaned[key] = number
             continue

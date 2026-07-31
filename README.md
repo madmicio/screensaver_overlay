@@ -139,6 +139,7 @@ Device settings are configured only inside each browser tab:
 - brightness reduction percentage/intensity
 - minimum brightness for logarithmic curve
 - fixed dashboard/screensaver brightness values
+- adaptive ambient brightness calibration, offset, gamma, and optional light sensor
 - Fully Kiosk host, port, password, and HTTPS
 - automatic brightness restore
 
@@ -292,6 +293,7 @@ Brightness control is always configured per browser/device.
 | Percentage reduction | Reads current brightness and reduces it by the configured percentage |
 | Logarithmic reduction | Reads current brightness and applies a stronger curve at low values |
 | Fixed values | Uses one fixed value for the dashboard and one fixed value for the screensaver |
+| Adaptive ambient light | Replaces Android automatic brightness with a calibrated ambient-light curve |
 
 #### Percentage Reduction
 
@@ -340,6 +342,58 @@ This strategy does not read current brightness. It uses:
 
 Use it when you want fixed levels independent from ambient light or automatic brightness.
 
+#### Adaptive Ambient Light
+
+The adaptive strategy is designed to replace Android automatic brightness for a configured tablet/browser.
+
+It periodically reads ambient light and sets the physical screen brightness while the dashboard is visible and while the screensaver is active.
+
+Setup flow:
+
+1. Set the tablet brightness manually to a comfortable value for the current room light.
+2. In the browser brightness settings, select `Adaptive ambient light`.
+3. Save the browser configuration.
+4. Press `Calibrate`.
+
+Calibration saves:
+
+- current ambient light in lux
+- current screen brightness
+
+After calibration, dashboard brightness is calculated with:
+
+```text
+dashboard_brightness = calibrated_brightness * (current_lux / calibrated_lux) ^ gamma
+```
+
+Default `gamma` is `0.5`. Lower values react less aggressively to ambient light changes.
+
+When the screensaver is active, the integration applies a fixed offset:
+
+```text
+screensaver_brightness = max(1, dashboard_brightness - screensaver_offset)
+```
+
+Examples with offset `100`:
+
+| Dashboard brightness | Screensaver brightness |
+| --- | --- |
+| 200 | 100 |
+| 80 | 1 |
+
+The ambient light source is selected in this order:
+
+1. Optional Home Assistant ambient light sensor, if configured and valid.
+2. Fully Kiosk `deviceInfo.sensorInfo` ambient light sensor (`type: 5`), when Fully Kiosk is configured.
+
+The optional ambient light entity should be set only when you do not want to use the device sensor.
+
+The adaptive loop uses:
+
+- default update interval: 15 seconds
+- exponential lux smoothing
+- minimum brightness command delta: 3 points
+
 #### Android Companion App
 
 Use the full notify service name:
@@ -374,6 +428,7 @@ Notes:
 - iOS/iPadOS can show the overlay, but cannot change brightness with this integration
 - Android may ask for permission to modify system settings
 - percentage/logarithmic strategies require the Companion brightness sensor to update frequently, about every 15 seconds
+- adaptive strategy needs an ambient light source; with Companion App mode, configure a Home Assistant light sensor
 - if commands are delayed, disable battery optimization for Home Assistant Companion App
 
 #### Fully Kiosk
@@ -592,6 +647,7 @@ Le impostazioni device sono configurate solo nella scheda del singolo browser:
 - percentuale/intensita riduzione luminosita
 - luminosita minima per curva logaritmica
 - valori fissi dashboard/screensaver
+- calibrazione luminosita ambientale adattiva, offset, gamma e sensore luce opzionale
 - host, porta, password e HTTPS Fully Kiosk
 - ripristino luminosita automatica
 
@@ -745,6 +801,7 @@ La gestione luminosita e sempre per singolo browser/device.
 | Riduzione percentuale | Legge la luminosita corrente e la riduce della percentuale configurata |
 | Riduzione logaritmica | Legge la luminosita corrente e applica una curva piu aggressiva sui valori bassi |
 | Valori fissi | Usa un valore fisso per dashboard e uno per screensaver |
+| Luce ambientale adattiva | Sostituisce la luminosita automatica Android con una curva calibrata sulla luce ambientale |
 
 #### Riduzione percentuale
 
@@ -793,6 +850,58 @@ Questa strategia non legge la luminosita corrente. Usa:
 
 E utile quando vuoi livelli sempre uguali, indipendenti dalla luminosita automatica o dalla luce ambiente.
 
+#### Luce ambientale adattiva
+
+La strategia adattiva serve a sostituire la luminosita automatica Android per il tablet/browser configurato.
+
+Legge periodicamente la luce ambientale e imposta la luminosita fisica dello schermo sia quando e visibile la dashboard sia quando e attivo lo screensaver.
+
+Flusso di configurazione:
+
+1. Imposta manualmente sul tablet una luminosita comoda per la luce presente nella stanza.
+2. Nelle impostazioni luminosita del browser, seleziona `Luce ambientale adattiva`.
+3. Salva la configurazione browser.
+4. Premi `Calibra`.
+
+La calibrazione salva:
+
+- luce ambientale corrente in lux
+- luminosita schermo corrente
+
+Dopo la calibrazione, la luminosita dashboard viene calcolata con:
+
+```text
+luminosita_dashboard = luminosita_calibrata * (lux_correnti / lux_calibrazione) ^ gamma
+```
+
+Il valore predefinito di `gamma` e `0.5`. Valori piu bassi reagiscono meno aggressivamente alle variazioni di luce ambientale.
+
+Quando lo screensaver e attivo, l'integrazione applica un offset fisso:
+
+```text
+luminosita_screensaver = max(1, luminosita_dashboard - offset_screensaver)
+```
+
+Esempi con offset `100`:
+
+| Luminosita dashboard | Luminosita screensaver |
+| --- | --- |
+| 200 | 100 |
+| 80 | 1 |
+
+La sorgente della luce ambientale viene scelta in questo ordine:
+
+1. Sensore luce Home Assistant opzionale, se configurato e valido.
+2. Sensore luce ambientale Fully Kiosk da `deviceInfo.sensorInfo` (`type: 5`), quando Fully Kiosk e configurato.
+
+L'entita luce ambientale opzionale va impostata solo se non si vuole utilizzare il sensore del device.
+
+Il loop adattivo usa:
+
+- intervallo aggiornamento predefinito: 15 secondi
+- filtro esponenziale sui lux
+- variazione minima per inviare un nuovo comando: 3 punti
+
 #### Companion App Android
 
 Per usare App Companion, inserisci il servizio notify completo:
@@ -827,6 +936,7 @@ Note:
 - iOS/iPadOS possono mostrare l'overlay, ma non possono cambiare luminosita con questa integrazione
 - Android puo chiedere il permesso per modificare impostazioni di sistema
 - per strategie percentuale/logaritmica serve il sensore luminosita Companion aggiornato spesso, circa ogni 15 secondi
+- per la strategia adattiva serve una sorgente luce ambientale; in modalita Companion App configura un sensore luce Home Assistant
 - se i comandi arrivano in ritardo, disattiva l'ottimizzazione batteria per Home Assistant Companion App
 
 #### Fully Kiosk

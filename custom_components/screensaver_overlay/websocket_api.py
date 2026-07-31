@@ -12,6 +12,7 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .browser_store import (
@@ -24,7 +25,12 @@ from .browser_store import (
     build_effective_config,
     build_entry_config,
 )
-from .const import DOMAIN, SIGNAL_BROWSER_CONFIG_UPDATED
+from .const import (
+    CONF_ADAPTIVE_CALIBRATION_BRIGHTNESS,
+    CONF_ADAPTIVE_CALIBRATION_LUX,
+    DOMAIN,
+    SIGNAL_BROWSER_CONFIG_UPDATED,
+)
 
 BACKGROUND_DIR_PARTS = ("www", "screensaver_overlay", "backgrounds")
 BACKGROUND_URL_PREFIX = "/local/screensaver_overlay/backgrounds"
@@ -400,6 +406,23 @@ def _runtime_for_msg(hass: HomeAssistant, msg: dict):
     )
 
 
+async def _device_config_for_client(
+    hass: HomeAssistant, client_id: str | None
+) -> dict | None:
+    """Return effective config including per-device brightness settings."""
+    entry = _first_entry(hass)
+    if entry is None:
+        return None
+    browser_data = await async_load_browser_data(hass)
+    config = build_effective_config(
+        _entry_payload(entry),
+        browser_data,
+        client_id,
+        include_device_config=True,
+    )
+    return _normalize_effective_lists(config)
+
+
 @callback
 def async_register_websocket_api(hass: HomeAssistant) -> None:
     """Register websocket commands."""
@@ -409,6 +432,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_save_global_config)
     websocket_api.async_register_command(hass, websocket_save_browser_settings)
     websocket_api.async_register_command(hass, websocket_save_browser_client)
+    websocket_api.async_register_command(hass, websocket_calibrate_adaptive_brightness)
     websocket_api.async_register_command(hass, websocket_delete_browser_client)
     websocket_api.async_register_command(hass, websocket_list_background_images)
     websocket_api.async_register_command(hass, websocket_upload_background_image)
@@ -465,6 +489,10 @@ async def websocket_get_config(hass: HomeAssistant, connection, msg) -> None:
 async def websocket_register_client(hass: HomeAssistant, connection, msg) -> None:
     """Register a browser client."""
     client = await async_register_browser_client(hass, msg)
+    runtime = _runtime_for_msg(hass, msg)
+    if runtime and client:
+        config = await _device_config_for_client(hass, msg.get("client_id"))
+        await runtime.async_client_config_updated(msg.get("client_id"), config)
     async_dispatcher_send(hass, SIGNAL_BROWSER_CONFIG_UPDATED)
     connection.send_result(msg["id"], {"client": client})
 
@@ -553,8 +581,67 @@ async def websocket_save_browser_client(hass: HomeAssistant, connection, msg) ->
     browser_data = await async_save_browser_client_config(
         hass, msg["client_id"], msg["client_config"]
     )
+    runtime = _runtime_for_msg(hass, msg)
+    if runtime:
+        config = await _device_config_for_client(hass, msg.get("client_id"))
+        await runtime.async_client_config_updated(msg.get("client_id"), config)
     async_dispatcher_send(hass, SIGNAL_BROWSER_CONFIG_UPDATED)
     connection.send_result(msg["id"], {"browser_config": browser_data})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "screensaver_overlay/calibrate_adaptive_brightness",
+        vol.Required("client_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_calibrate_adaptive_brightness(
+    hass: HomeAssistant, connection, msg
+) -> None:
+    """Calibrate adaptive brightness for one browser client."""
+    if not _is_admin_connection(connection):
+        _send_admin_required(connection, msg)
+        return
+
+    runtime = _runtime_for_msg(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "not_found", "Runtime is not available")
+        return
+
+    client_id = msg["client_id"]
+    config = await _device_config_for_client(hass, client_id)
+    if config is None:
+        connection.send_error(msg["id"], "not_found", "Browser client is not enabled")
+        return
+
+    try:
+        calibration = await runtime.async_calibrate_adaptive_brightness(config)
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "calibration_failed", str(err))
+        return
+
+    browser_data = await async_load_browser_data(hass)
+    client = browser_data.get("clients", {}).get(client_id)
+    if client is None:
+        connection.send_error(
+            msg["id"], "not_found", "Browser client is not registered"
+        )
+        return
+
+    overrides = dict(client.get("overrides") or {})
+    overrides[CONF_ADAPTIVE_CALIBRATION_LUX] = calibration["lux"]
+    overrides[CONF_ADAPTIVE_CALIBRATION_BRIGHTNESS] = calibration["brightness"]
+    client["overrides"] = overrides
+    browser_data = await async_save_browser_data(hass, browser_data)
+
+    config = await _device_config_for_client(hass, client_id)
+    await runtime.async_client_config_updated(client_id, config)
+    async_dispatcher_send(hass, SIGNAL_BROWSER_CONFIG_UPDATED)
+    connection.send_result(
+        msg["id"],
+        {"browser_config": browser_data, "calibration": calibration},
+    )
 
 
 @websocket_api.websocket_command(
@@ -573,6 +660,9 @@ async def websocket_delete_browser_client(
         return
 
     browser_data = await async_delete_browser_client(hass, msg["client_id"])
+    runtime = _runtime_for_msg(hass, msg)
+    if runtime:
+        await runtime.async_client_removed(msg.get("client_id"))
     async_dispatcher_send(hass, SIGNAL_BROWSER_CONFIG_UPDATED)
     connection.send_result(msg["id"], {"browser_config": browser_data})
 
