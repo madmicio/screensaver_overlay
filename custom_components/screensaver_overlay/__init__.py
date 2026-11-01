@@ -153,6 +153,7 @@ class ClientRuntimeState:
     """Runtime state for one browser client."""
 
     active: bool = False
+    screen_sleeping: bool = False
     config: dict | None = None
     screen_off_unsub: CALLBACK_TYPE | None = None
     motion_unsub: CALLBACK_TYPE | None = None
@@ -403,6 +404,7 @@ class ScreensaverOverlayRuntime:
         """Cancel runtime state for a removed or disabled client."""
         state = self._state_for(client_id)
         state.active = False
+        state.screen_sleeping = False
         self._cancel_screen_off(state)
         self._remove_motion_listener(state)
         self._cancel_overlay_brightness_reapply(state)
@@ -469,6 +471,7 @@ class ScreensaverOverlayRuntime:
         elif state.config is None:
             state.config = self.config
         state.active = False
+        state.screen_sleeping = False
         self._cancel_screen_off(state)
         self._remove_motion_listener(state)
         self._cancel_overlay_brightness_reapply(state)
@@ -484,6 +487,7 @@ class ScreensaverOverlayRuntime:
         """Unload runtime listeners and timers."""
         for state in list(self._client_states.values()):
             state.active = False
+            state.screen_sleeping = False
             self._cancel_screen_off(state)
             self._remove_motion_listener(state)
             self._cancel_overlay_brightness_reapply(state)
@@ -538,6 +542,7 @@ class ScreensaverOverlayRuntime:
         )
         await asyncio.sleep(0.2)
         await self._async_set_screen_power(config, False)
+        state.screen_sleeping = True
 
     @callback
     def _ensure_motion_listener(
@@ -1039,10 +1044,14 @@ class ScreensaverOverlayRuntime:
             },
         )
 
-    async def _async_set_screen_power(self, config: dict, turn_on: bool) -> None:
+    async def _async_set_screen_power(
+        self, config: dict, turn_on: bool, restore_after_wake: bool = False
+    ) -> None:
         """Turn screen on/off through Fully REST or the configured HA switch."""
         if self._has_fully_rest_config(config):
-            await self._async_set_fully_screen_power(config, turn_on)
+            await self._async_set_fully_screen_power(
+                config, turn_on, restore_after_wake
+            )
             return
 
         screen_switch = self._screen_switch(config)
@@ -1057,12 +1066,23 @@ class ScreensaverOverlayRuntime:
             blocking=False,
         )
 
-    async def _async_set_fully_screen_power(self, config: dict, turn_on: bool) -> None:
+    async def _async_set_fully_screen_power(
+        self, config: dict, turn_on: bool, restore_after_wake: bool = False
+    ) -> None:
         """Turn screen on/off through Fully Kiosk REST."""
         await self._async_fully_request(
             config,
             {"cmd": "screenOn" if turn_on else "screenOff"},
         )
+        if turn_on and restore_after_wake:
+            await self._async_restore_fully_after_screen_wake(config)
+
+    async def _async_restore_fully_after_screen_wake(self, config: dict) -> None:
+        """Nudge Fully and Android WebView after screen wake."""
+        await asyncio.sleep(0.25)
+        _LOGGER.debug("Restoring Fully Kiosk foreground state after screen wake")
+        await self._async_fully_request(config, {"cmd": "stopScreensaver"})
+        await self._async_fully_request(config, {"cmd": "toForeground"})
 
     def _fully_base_url(self, config: dict) -> str | None:
         """Return Fully Kiosk REST base URL."""
@@ -1151,7 +1171,9 @@ class ScreensaverOverlayRuntime:
             return
 
         self._cancel_screen_off(state)
-        await self._async_set_screen_power(config, True)
+        restore_after_wake = state.screen_sleeping
+        state.screen_sleeping = False
+        await self._async_set_screen_power(config, True, restore_after_wake)
         if self._uses_adaptive_brightness(config):
             await self._async_apply_adaptive_brightness(client_id, state)
             self._schedule_adaptive_brightness_loop(client_id, state)

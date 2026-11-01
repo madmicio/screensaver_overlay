@@ -49,6 +49,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
   let derivedConfig = null;
   let previousDocumentBackground = null;
   let wakeRepaintTimers = [];
+  let sleepShieldWatchdogTimers = [];
   const forecastTimeCache = new Map();
   const preloadedBackgroundImages = new Set();
   let inputShieldTimer = undefined;
@@ -864,6 +865,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     lightning: "lightning",
     "lightning-rainy": "lightning-rainy",
     partlycloudy: "partlycloudy",
+    "partlycloudy-night": "partlycloudy-night",
     pouring: "pouring",
     rainy: "rainy",
     snowy: "snowy",
@@ -872,6 +874,19 @@ if (!window.__screensaverOverlayComponentInstalled) {
     windy: "windy",
     "windy-variant": "windy-variant",
     exceptional: "!!",
+  };
+
+  const getForecastWeatherIcon = (forecast) => {
+    const condition = forecast?.condition;
+    if (forecast?.is_daytime === false) {
+      if (condition === "partlycloudy") {
+        return "partlycloudy-night";
+      }
+      if (condition === "sunny" || condition === "clear") {
+        return "night";
+      }
+    }
+    return weatherIconsDay[condition] || "unknown";
   };
 
   const subscribeHourlyForecast = async () => {
@@ -983,6 +998,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     const weatherState = hass.states[getWeatherEntity()];
     const temperatureUnit = weatherState?.attributes?.temperature_unit || "";
     let previousCondition = "";
+    let previousIcon = "";
 
     if (!hourlyForecast.length) {
       return "";
@@ -995,9 +1011,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
           ${hourlyForecast
             .slice(0, 16)
             .map((forecast) => {
-              const showCondition = forecast.condition !== previousCondition;
+              const icon = getForecastWeatherIcon(forecast);
+              const showCondition =
+                forecast.condition !== previousCondition || icon !== previousIcon;
               previousCondition = forecast.condition;
-              const icon = weatherIconsDay[forecast.condition] || "unknown";
+              previousIcon = icon;
               const iconUrl = `${ASSET_BASE}/weather_icons/${html(icon)}.svg`;
               const temperature = Number(forecast.temperature);
               const temperatureClass =
@@ -1286,6 +1304,11 @@ if (!window.__screensaverOverlayComponentInstalled) {
     wakeRepaintTimers = [];
   };
 
+  const clearSleepShieldWatchdogTimers = () => {
+    sleepShieldWatchdogTimers.forEach((timer) => window.clearTimeout(timer));
+    sleepShieldWatchdogTimers = [];
+  };
+
   const forceOverlayRepaint = () => {
     if (!overlay || !content || !isVisible) {
       return;
@@ -1295,17 +1318,25 @@ if (!window.__screensaverOverlayComponentInstalled) {
     overlay.style.opacity = "1";
     overlay.style.backgroundColor = "black";
     content.style.backgroundColor = "black";
+    if (!overlay.classList.contains("screen-sleeping")) {
+      content.style.opacity = "1";
+    }
     overlay.style.setProperty(
       "--screensaver-wake-repaint-nudge",
       `${Date.now() % 2}px`
     );
     void overlay.offsetHeight;
+    void content.offsetHeight;
     window.requestAnimationFrame(() => {
-      if (!overlay || !isVisible) {
+      if (!overlay || !content || !isVisible) {
         return;
       }
       overlay.style.opacity = "1";
+      if (!overlay.classList.contains("screen-sleeping")) {
+        content.style.opacity = "1";
+      }
       void overlay.offsetHeight;
+      void content.offsetHeight;
     });
   };
 
@@ -1316,10 +1347,37 @@ if (!window.__screensaverOverlayComponentInstalled) {
     });
   };
 
+  const recoverOverlayAfterWake = (source) => {
+    if (!overlay || !content || !isVisible) {
+      return;
+    }
+    if (!isCurrentPageAllowed()) {
+      return;
+    }
+
+    console.debug("screensaver-overlay wake recovery", { source });
+    clearScreenSleepShield();
+    applyOverlayVisibleStyles({ immediate: true });
+    ensureOverlayRendered();
+    startBackgroundCarousel();
+    updateClock();
+    forceOverlayRepaint();
+  };
+
+  const scheduleSleepShieldWatchdog = () => {
+    clearSleepShieldWatchdogTimers();
+    [1200, 2500, 5000, 10000].forEach((delay) => {
+      sleepShieldWatchdogTimers.push(
+        window.setTimeout(() => recoverOverlayAfterWake("sleep-watchdog"), delay)
+      );
+    });
+  };
+
   const applyScreenSleepShield = () => {
     if (!overlay || !content || !isVisible) {
       return;
     }
+    console.debug("screensaver-overlay sleep shield applied");
     setDocumentWakeBackground(true);
     overlay.classList.add("screen-sleeping");
     overlay.classList.add("resume-immediate");
@@ -1330,6 +1388,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     content.style.backgroundColor = "black";
     overlay.setAttribute("aria-hidden", "false");
     forceOverlayRepaint();
+    scheduleSleepShieldWatchdog();
   };
 
   const clearScreenSleepShield = () => {
@@ -1337,11 +1396,18 @@ if (!window.__screensaverOverlayComponentInstalled) {
       window.clearTimeout(sleepShieldReleaseTimer);
       sleepShieldReleaseTimer = undefined;
     }
+    clearSleepShieldWatchdogTimers();
     if (!overlay) {
       return;
     }
+    if (overlay.classList.contains("screen-sleeping")) {
+      console.debug("screensaver-overlay sleep shield released");
+    }
     overlay.classList.remove("screen-sleeping");
     overlay.classList.remove("resume-immediate");
+    if (content) {
+      content.style.opacity = "1";
+    }
   };
 
   const releaseScreenSleepShieldAfterWake = () => {
@@ -1352,7 +1418,10 @@ if (!window.__screensaverOverlayComponentInstalled) {
       window.clearTimeout(sleepShieldReleaseTimer);
     }
     sleepShieldReleaseTimer = window.setTimeout(
-      clearScreenSleepShield,
+      () => {
+        clearScreenSleepShield();
+        forceOverlayRepaint();
+      },
       WAKE_SHIELD_RELEASE_MS
     );
   };
@@ -1433,10 +1502,12 @@ if (!window.__screensaverOverlayComponentInstalled) {
         if (entityId === config?.screen_switch && isVisible) {
           const newState = event?.data?.new_state?.state;
           if (newState === "off") {
+            console.debug("screensaver-overlay screen switch sleep state received");
             applyScreenSleepShield();
             return;
           }
           if (newState === "on") {
+            console.debug("screensaver-overlay screen switch wake state received");
             restoreOverlayFromBackend({ forceLocalRestore: true });
             releaseScreenSleepShieldAfterWake();
             return;
@@ -1473,6 +1544,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         if (eventClientId && eventClientId !== clientId) {
           return;
         }
+        console.debug("screensaver-overlay sleep event received");
         applyScreenSleepShield();
       }, "screensaver_overlay_screen_sleep");
       wakeEventUnsub = await hass.connection.subscribeEvents((event) => {
@@ -1480,6 +1552,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
         if (eventClientId && eventClientId !== clientId) {
           return;
         }
+        console.debug("screensaver-overlay wake event received");
         restoreOverlayFromBackend({ forceLocalRestore: true });
         releaseScreenSleepShieldAfterWake();
       }, "screensaver_overlay_screen_wake");
@@ -1662,6 +1735,7 @@ if (!window.__screensaverOverlayComponentInstalled) {
     overlay.setAttribute("aria-hidden", "true");
     clearScreenSleepShield();
     clearWakeRepaintTimers();
+    clearSleepShieldWatchdogTimers();
     setDocumentWakeBackground(false);
   };
 
@@ -1670,17 +1744,26 @@ if (!window.__screensaverOverlayComponentInstalled) {
       return;
     }
 
+    if (forceLocalRestore) {
+      console.debug("screensaver-overlay wake restore requested");
+    }
     const localOverlayActive =
       forceLocalRestore || isVisible || getStoredOverlayActive() || backendOverlayActive;
     if (localOverlayActive && isCurrentPageAllowed()) {
       stopIdleTimer();
       isVisible = true;
       setStoredOverlayActive(true);
+      if (forceLocalRestore) {
+        clearScreenSleepShield();
+      }
       applyOverlayVisibleStyles({ immediate: true });
       startBurnInMovement();
       ensureOverlayRendered();
       startBackgroundCarousel();
       updateClock();
+      if (forceLocalRestore) {
+        forceOverlayRepaint();
+      }
     }
 
     config = (await getConfig()) || config;
@@ -1692,11 +1775,17 @@ if (!window.__screensaverOverlayComponentInstalled) {
     isVisible = true;
     const showVersion = ++overlayStateVersion;
     setStoredOverlayActive(true);
+    if (forceLocalRestore) {
+      clearScreenSleepShield();
+    }
     applyOverlayVisibleStyles({ immediate: true });
     startBurnInMovement();
     ensureOverlayRendered();
     startBackgroundCarousel();
     updateClock();
+    if (forceLocalRestore) {
+      forceOverlayRepaint();
+    }
     await notifyBackend("screensaver_overlay/overlay_shown");
     if (!isVisible || overlayStateVersion !== showVersion) {
       return;
@@ -1705,10 +1794,14 @@ if (!window.__screensaverOverlayComponentInstalled) {
     await startVisibleTimers();
   };
 
-  const handleFrontendResume = async () => {
+  const handleFrontendResume = async (source = "frontend-resume") => {
     if (isVisible) {
+      console.debug("screensaver-overlay frontend resume", { source });
       if (!config?.entry_id) {
         config = (await getConfig()) || config;
+      }
+      if (overlay?.classList.contains("screen-sleeping")) {
+        recoverOverlayAfterWake(source);
       }
       applyOverlayVisibleStyles({ immediate: true });
       ensureOverlayRendered();
@@ -2380,17 +2473,18 @@ if (!window.__screensaverOverlayComponentInstalled) {
     window.__screensaverOverlayComponentRefreshConfig = refreshConfig;
     window.__screensaverOverlayComponentDashboardPaths = getDashboardPaths;
     window.__screensaverOverlayComponentIsPageAllowed = isCurrentPageAllowed;
+    window.__screensaverOverlayComponentRecoverAfterWake = recoverOverlayAfterWake;
 
     window.addEventListener("pointerdown", handleInput, { passive: true });
     window.addEventListener("touchstart", handleInput, { passive: true });
     window.addEventListener("keydown", handleInput, { passive: false });
     window.addEventListener("wheel", handleInput, { passive: true });
     window.addEventListener("screensaver-overlay-location-changed", handleLocationChanged);
-    window.addEventListener("focus", handleFrontendResume);
-    window.addEventListener("pageshow", handleFrontendResume);
+    window.addEventListener("focus", () => handleFrontendResume("focus"));
+    window.addEventListener("pageshow", () => handleFrontendResume("pageshow"));
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) {
-        handleFrontendResume();
+        handleFrontendResume("visibilitychange");
       }
     });
   };
