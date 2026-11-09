@@ -1044,13 +1044,11 @@ class ScreensaverOverlayRuntime:
             },
         )
 
-    async def _async_set_screen_power(
-        self, config: dict, turn_on: bool, restore_after_wake: bool = False
-    ) -> None:
+    async def _async_set_screen_power(self, config: dict, turn_on: bool) -> None:
         """Turn screen on/off through Fully REST or the configured HA switch."""
         if self._has_fully_rest_config(config):
-            await self._async_set_fully_screen_power(
-                config, turn_on, restore_after_wake
+            await self._async_fully_request(
+                config, {"cmd": "screenOn" if turn_on else "screenOff"}
             )
             return
 
@@ -1065,17 +1063,6 @@ class ScreensaverOverlayRuntime:
             {"entity_id": screen_switch},
             blocking=False,
         )
-
-    async def _async_set_fully_screen_power(
-        self, config: dict, turn_on: bool, restore_after_wake: bool = False
-    ) -> None:
-        """Turn screen on/off through Fully Kiosk REST."""
-        await self._async_fully_request(
-            config,
-            {"cmd": "screenOn" if turn_on else "screenOff"},
-        )
-        if turn_on and restore_after_wake:
-            await self._async_restore_fully_after_screen_wake(config)
 
     async def _async_restore_fully_after_screen_wake(self, config: dict) -> None:
         """Nudge Fully and Android WebView after screen wake."""
@@ -1171,24 +1158,33 @@ class ScreensaverOverlayRuntime:
             return
 
         self._cancel_screen_off(state)
-        restore_after_wake = state.screen_sleeping
+        fully_rest = self._has_fully_rest_config(config)
+        restore_after_wake = state.screen_sleeping and fully_rest
         state.screen_sleeping = False
-        await self._async_set_screen_power(config, True, restore_after_wake)
+        await self._async_set_screen_power(config, True)
+        if not state.active:
+            return
+
+        # Let the browser render while Fully and brightness finish restoring.
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_screen_wake",
+            {
+                "client_id": str(client_id or ""),
+                "screen_control": "fully_rest" if fully_rest else self._screen_switch(config),
+            },
+        )
+        if restore_after_wake:
+            await self._async_restore_fully_after_screen_wake(config)
+            if not state.active:
+                return
+
         if self._uses_adaptive_brightness(config):
             await self._async_apply_adaptive_brightness(client_id, state)
             self._schedule_adaptive_brightness_loop(client_id, state)
         else:
             await self._async_reapply_overlay_brightness(state)
-            self._schedule_overlay_brightness_reapply(state)
-        self.hass.bus.async_fire(
-            f"{DOMAIN}_screen_wake",
-            {
-                "client_id": str(client_id or ""),
-                "screen_control": "fully_rest"
-                if self._has_fully_rest_config(config)
-                else self._screen_switch(config),
-            },
-        )
+            if state.active:
+                self._schedule_overlay_brightness_reapply(state)
 
 
 async def _async_register_frontend_and_api(hass: HomeAssistant) -> None:

@@ -466,6 +466,16 @@ Screen control can use:
 - a Home Assistant switch, when Fully is not used
 - Fully Kiosk REST `screenOn` / `screenOff`, when Fully is configured
 
+#### White flash on wake in Fully Kiosk
+
+If the tablet briefly shows a white screen before Screensaver Overlay returns, set the WebView background on that tablet.
+
+1. In Fully Kiosk, open **Settings → Advanced Web Settings**.
+2. Set **Default Webview Background Color** to black (`#000000`).
+3. Return to the Home Assistant dashboard, let the display turn off, then wake it to check the transition.
+
+The WebView can show this background while it waits for the page to render. The overlay may still take a moment to return. [Fully Kiosk documentation](https://www.fully-kiosk.com/docs/en/configuration/advanced-web)
+
 ### Binary Sensor For Automations
 
 Each browser can create its own dedicated binary sensor. The option is in the browser tab:
@@ -973,6 +983,16 @@ Puoi controllare lo schermo con:
 
 - switch Home Assistant, se non usi Fully
 - REST Fully Kiosk `screenOn` / `screenOff`, se Fully e configurato
+
+#### Lampo bianco al risveglio in Fully Kiosk
+
+Se il tablet mostra per un istante una schermata bianca prima che ricompaia Screensaver Overlay, imposta lo sfondo della WebView sul tablet interessato.
+
+1. In Fully Kiosk, apri **Settings → Advanced Web Settings**.
+2. Imposta **Default Webview Background Color** su nero (`#000000`).
+3. Torna alla dashboard di Home Assistant, lascia spegnere lo schermo e riattivalo per verificare il passaggio.
+
+La WebView può mostrare questo sfondo mentre attende che la pagina venga disegnata. Lo screensaver può comunque impiegare un momento a ricomparire. [Documentazione di Fully Kiosk](https://www.fully-kiosk.com/docs/en/configuration/advanced-web)
 
 ### Binary Sensor Per Automazioni
 
